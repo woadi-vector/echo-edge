@@ -2,6 +2,7 @@
 #include "echo_model.h"
 #include <math.h>
 #include <string.h>
+#include <stddef.h>
 
 #define ECHO_MIN_BEATS 20
 #define ECHO_RR_MIN 250.0f
@@ -111,9 +112,49 @@ void echo_classify(const float *features, echo_result_t *out)
     for (int c = 0; c < 3; c++) out->votes[c] = (float)tally[c] / (float)ECHO_N_TREES;
     out->state      = (echo_state_t)best;
     out->confidence = out->votes[best];
-    if (features != out->features)
+    if (features != out->features && features != out->relative)
         memcpy(out->features, features, sizeof(float) * ECHO_N_FEATURES);
     out->valid = 1;
+}
+
+int echo_classify_batch(const float *features, int n,
+                        echo_state_t *states, float *confidence)
+{
+    if (n <= 0) return 0;
+    if (n > ECHO_BATCH_MAX) n = ECHO_BATCH_MAX;
+
+    float z[ECHO_BATCH_MAX * ECHO_N_FEATURES];
+    uint16_t tally[ECHO_BATCH_MAX * 3];
+
+    for (int s = 0; s < n; s++) {
+        const float *src = features + (size_t)s * ECHO_N_FEATURES;
+        float *dst = z + (size_t)s * ECHO_N_FEATURES;
+        for (int i = 0; i < ECHO_N_FEATURES; i++)
+            dst[i] = (src[i] - ECHO_SCALER_MEAN[i]) * ECHO_SCALER_INV_SCALE[i];
+    }
+    memset(tally, 0, sizeof(uint16_t) * (size_t)n * 3);
+
+    /* Tree-major: the tree stays resident while the batch streams past it. */
+    for (int t = 0; t < ECHO_N_TREES; t++) {
+        const echo_node_t *root = &ECHO_NODES[ECHO_TREE_ROOT[t]];
+        for (int s = 0; s < n; s++) {
+            const float *zi = z + (size_t)s * ECHO_N_FEATURES;
+            const echo_node_t *nd = root;
+            while (nd->feature >= 0)
+                nd = (zi[nd->feature] <= nd->threshold) ? nd + 1 : nd + nd->right_off;
+            tally[s * 3 + nd->klass]++;
+        }
+    }
+
+    for (int s = 0; s < n; s++) {
+        const uint16_t *v = &tally[s * 3];
+        int best = 0;
+        if (v[1] > v[best]) best = 1;
+        if (v[2] > v[best]) best = 2;
+        states[s] = (echo_state_t)best;
+        if (confidence) confidence[s] = (float)v[best] / (float)ECHO_N_TREES;
+    }
+    return n;
 }
 
 void echo_step(echo_window_t *w, float rr_ms, echo_result_t *out)
@@ -126,6 +167,65 @@ void echo_step(echo_window_t *w, float rr_ms, echo_result_t *out)
         return;
     }
     echo_classify(out->features, out);
+}
+
+void echo_relativize(const float *raw, const float *baseline, float *out)
+{
+#if ECHO_BASELINED
+    for (int i = 0; i < ECHO_N_FEATURES; i++)
+        out[i] = (raw[i] - baseline[i]) * ECHO_POP_INV_SCALE[i];
+#else
+    (void)baseline;
+    memcpy(out, raw, sizeof(float) * ECHO_N_FEATURES);
+#endif
+}
+
+void echo_operator_init(echo_operator_t *op, float window_ms, float enroll_ms)
+{
+    memset(op, 0, sizeof(*op));
+    echo_window_init(&op->win, window_ms);
+    op->enroll_ms = (enroll_ms > 0.0f) ? enroll_ms : 180000.0f;
+#if !ECHO_BASELINED
+    op->ready = 1;              /* model needs no baseline */
+#endif
+}
+
+void echo_operator_set_baseline(echo_operator_t *op, const float *baseline)
+{
+    memcpy(op->baseline, baseline, sizeof(float) * ECHO_N_FEATURES);
+    op->ready = 1;
+}
+
+const float *echo_operator_baseline(const echo_operator_t *op)
+{
+    return op->ready ? op->baseline : (const float *)0;
+}
+
+void echo_operator_step(echo_operator_t *op, float rr_ms, echo_result_t *out)
+{
+    out->enrolling = 0;
+    if (!echo_window_push(&op->win, rr_ms)) { out->valid = 0; return; }
+    if (!echo_features(&op->win, out->features)) { out->valid = 0; return; }
+
+    if (!op->ready) {
+        /* Accumulate resting feature vectors until the quiet period is met. */
+        for (int i = 0; i < ECHO_N_FEATURES; i++) op->accum[i] += out->features[i];
+        op->accum_n++;
+        op->elapsed_ms += rr_ms;
+
+        if (op->elapsed_ms >= op->enroll_ms && op->accum_n > 0) {
+            for (int i = 0; i < ECHO_N_FEATURES; i++)
+                op->baseline[i] = op->accum[i] / (float)op->accum_n;
+            op->ready = 1;
+        } else {
+            out->valid = 0;
+            out->enrolling = 1;
+            return;
+        }
+    }
+
+    echo_relativize(out->features, op->baseline, out->relative);
+    echo_classify(out->relative, out);
 }
 
 const char *echo_state_name(echo_state_t s)

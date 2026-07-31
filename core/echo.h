@@ -55,12 +55,32 @@ typedef struct {
     float    window_ms;            /* target window duration */
 } echo_window_t;
 
+/* Per-operator enrollment state.
+ *
+ * The model is trained on deviation from an operator's own resting baseline,
+ * not on absolute physiology, so a baseline vector must exist before any
+ * classification is meaningful. Establish it once per operator from a quiet
+ * enrollment period, then store it and reuse it forever.
+ *
+ * A model built with ECHO_BASELINED == 0 ignores all of this. */
+typedef struct {
+    echo_window_t win;
+    float    baseline[ECHO_N_FEATURES];
+    float    accum[ECHO_N_FEATURES];
+    uint32_t accum_n;
+    float    enroll_ms;        /* target quiet duration */
+    float    elapsed_ms;       /* quiet time observed so far */
+    int      ready;            /* baseline established */
+} echo_operator_t;
+
 typedef struct {
     echo_state_t state;
     float        confidence;                 /* winning class vote share */
     float        votes[3];                   /* GREEN / AMBER / RED */
     float        features[ECHO_N_FEATURES];  /* raw, pre-scaling */
+    float        relative[ECHO_N_FEATURES];  /* deviation from the operator's baseline */
     int          valid;                      /* 0 until the window fills */
+    int          enrolling;                  /* 1 while the baseline is still forming */
 } echo_result_t;
 
 void echo_window_init(echo_window_t *w, float window_ms);
@@ -76,8 +96,41 @@ int  echo_features(const echo_window_t *w, float *out);
 /* Scale + classify a feature vector. */
 void echo_classify(const float *features, echo_result_t *out);
 
+/* Batched, tree-major classification for fleet scoring.
+ *
+ * The single-vector path walks all trees per operator, pulling the whole
+ * forest through cache to produce one answer. This inverts the loops: each
+ * tree is loaded once and every operator in the batch is pushed through it
+ * before moving on. The forest is streamed once per batch instead of once
+ * per operator, and the working set becomes the batch rather than the model.
+ *
+ * `features` is n contiguous vectors of ECHO_N_FEATURES floats.
+ * `states` receives n results; `confidence` may be NULL. */
+#define ECHO_BATCH_MAX 64
+int echo_classify_batch(const float *features, int n,
+                        echo_state_t *states, float *confidence);
+
 /* Push a beat and classify in one call. */
 void echo_step(echo_window_t *w, float rr_ms, echo_result_t *out);
+
+/* --- per-operator API: use this one for anything live --- */
+
+/* enroll_ms is the quiet period used to establish the baseline. Around
+ * 180000 (three minutes) matches how the shipped model was trained. */
+void echo_operator_init(echo_operator_t *op, float window_ms, float enroll_ms);
+
+/* Restore a baseline saved from a previous session, skipping enrollment. */
+void echo_operator_set_baseline(echo_operator_t *op, const float *baseline);
+
+/* Read the established baseline back out for storage. NULL until ready. */
+const float *echo_operator_baseline(const echo_operator_t *op);
+
+/* Push one RR interval. While enrolling, out->enrolling is 1 and out->valid
+ * is 0 — no state is reported, because none can be. */
+void echo_operator_step(echo_operator_t *op, float rr_ms, echo_result_t *out);
+
+/* Express raw features as deviation from a baseline, in population units. */
+void echo_relativize(const float *raw, const float *baseline, float *out);
 
 const char *echo_state_name(echo_state_t s);
 
