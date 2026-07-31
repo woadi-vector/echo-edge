@@ -21,7 +21,8 @@ extern "C" {
  * node with one contiguous array at 8. */
 typedef struct {
     float   threshold;  /* split point, or unused on a leaf */
-    int16_t right_off;  /* offset to right child from this node */
+    int16_t right_off;  /* branch: offset to right child. leaf: index into
+                         * ECHO_LEAF_PROB, which a leaf does not otherwise use */
     int8_t  feature;    /* feature index, or -1 to mark a leaf */
     uint8_t klass;      /* predicted class on a leaf */
 } echo_node_t;

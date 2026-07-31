@@ -98,18 +98,24 @@ void echo_classify(const float *features, echo_result_t *out)
     for (int i = 0; i < ECHO_N_FEATURES; i++)
         z[i] = (features[i] - ECHO_SCALER_MEAN[i]) * ECHO_SCALER_INV_SCALE[i];
 
-    int tally[3] = {0, 0, 0};
+    /* Average the per-tree class distributions, matching sklearn's predict().
+     * Majority-voting each tree's own argmax is a different estimator and
+     * disagrees wherever leaves are impure. */
+    float acc[3] = {0.0f, 0.0f, 0.0f};
     for (int t = 0; t < ECHO_N_TREES; t++) {
         const echo_node_t *n = &ECHO_NODES[ECHO_TREE_ROOT[t]];
         while (n->feature >= 0)
             n = (z[n->feature] <= n->threshold) ? n + 1 : n + n->right_off;
-        tally[n->klass]++;
+        const float *p = &ECHO_LEAF_PROB[n->right_off * 3];
+        acc[0] += p[0];
+        acc[1] += p[1];
+        acc[2] += p[2];
     }
 
     int best = 0;
-    for (int c = 1; c < 3; c++) if (tally[c] > tally[best]) best = c;
+    for (int c = 1; c < 3; c++) if (acc[c] > acc[best]) best = c;
 
-    for (int c = 0; c < 3; c++) out->votes[c] = (float)tally[c] / (float)ECHO_N_TREES;
+    for (int c = 0; c < 3; c++) out->votes[c] = acc[c] / (float)ECHO_N_TREES;
     out->state      = (echo_state_t)best;
     out->confidence = out->votes[best];
     if (features != out->features && features != out->relative)

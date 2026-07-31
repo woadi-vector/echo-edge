@@ -55,7 +55,7 @@ def synthesize(n_per_class=1200, seed=7):
     return np.array(X), np.array(y)
 
 
-def emit_tree(t, classes):
+def emit_tree(t, classes, leaf_probs):
     """One sklearn tree -> depth-first preorder packed nodes.
 
     Preorder means the left child always lands immediately after its parent,
@@ -66,13 +66,26 @@ def emit_tree(t, classes):
     They diverge whenever the training data is missing a class — with only
     GREEN and RED present, column 1 means RED, not AMBER. Emitting the column
     index instead of the label silently mislabels every prediction.
+
+    Leaves store an index into a shared probability table rather than a hard
+    class. sklearn's predict() averages the per-tree class distributions and
+    takes the argmax of the mean; majority-voting each tree's own argmax is a
+    different estimator and disagrees on impure leaves. Since a leaf never
+    uses `right_off`, the index rides in that field for free.
     """
     out = []
 
     def walk(i):
         idx = len(out)
         if t.children_left[i] == -1:
-            out.append([0.0, 0, -1, int(classes[np.argmax(t.value[i][0])])])
+            v = np.asarray(t.value[i][0], dtype=np.float64)
+            total = v.sum()
+            dist = v / total if total > 0 else np.full(len(v), 1.0 / len(v))
+            full = np.zeros(3, dtype=np.float64)
+            for col, label in enumerate(classes):
+                full[label] = dist[col]
+            leaf_probs.append(full)
+            out.append([0.0, len(leaf_probs) - 1, -1, 0])
             return idx
         out.append([float(t.threshold[i]), 0, int(t.feature[i]), 0])
         walk(t.children_left[i])            # lands at idx + 1
@@ -87,14 +100,16 @@ def emit_tree(t, classes):
 def flatten(forest):
     """Forest -> one contiguous packed node array plus per-tree roots."""
     classes = np.asarray(forest.classes_, dtype=int)
-    nodes, roots = [], []
+    nodes, roots, leaf_probs = [], [], []
     for est in forest.estimators_:
         roots.append(len(nodes))
-        nodes.extend(emit_tree(est.tree_, classes))
+        nodes.extend(emit_tree(est.tree_, classes, leaf_probs))
+    if len(leaf_probs) > 32767:
+        raise ValueError("too many leaves for an int16 index; reduce --depth")
     for thr, off, feat, klass in nodes:
         if not -32768 <= off <= 32767:
             raise ValueError(f"right offset {off} exceeds int16; reduce --depth")
-    return nodes, roots
+    return nodes, roots, np.array(leaf_probs)
 
 
 def node_array(nodes, f):
@@ -113,7 +128,7 @@ def carray(name, ctype, values, fmt=str, per_line=12):
 
 
 def export_header(path, scaler, forest, model_id, pop_scale=None):
-    nodes, roots = flatten(forest)
+    nodes, roots, leaf_probs = flatten(forest)
     def f(v):
         s = f"{v:.9g}"
         if not any(c in s for c in ".eE"):
@@ -139,8 +154,11 @@ def export_header(path, scaler, forest, model_id, pop_scale=None):
         carray("ECHO_POP_INV_SCALE", "float", pop_inv, f),
         carray("ECHO_SCALER_MEAN", "float", list(scaler.mean_), f),
         carray("ECHO_SCALER_INV_SCALE", "float", inv_scale, f),
+        f"#define ECHO_N_LEAVES {len(leaf_probs)}",
+        "",
         carray("ECHO_TREE_ROOT", "int32_t", roots),
         node_array(nodes, f),
+        carray("ECHO_LEAF_PROB", "float", list(leaf_probs.ravel()), f),
         "#endif /* ECHO_MODEL_H */",
     ]
     path.write_text("\n".join(out))
