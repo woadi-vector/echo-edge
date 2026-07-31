@@ -10,13 +10,16 @@
 const HR_SERVICE = 'heart_rate';
 const HR_CHAR = 'heart_rate_measurement';
 const STATES = ['Green', 'Amber', 'Red'];
+const ENROLL_MS = 180000;              // three minutes of quiet
+const BASELINE_KEY = 'echo.baseline';  // per-browser, never transmitted
 const FEATURES = ['mean_rr', 'mean_hr', 'sdnn', 'rmssd', 'pnn50', 'rr_slope', 'hr_cv', 'coverage'];
 
 const $ = (id) => document.getElementById(id);
 const el = {
   connect: $('connect'), sim: $('sim'), status: $('status'), device: $('device'),
   beats: $('beats'), model: $('model'), state: $('state'), detail: $('detail'),
-  stack: $('stack'), trace: $('trace'),
+  stack: $('stack'), trace: $('trace'), enroll: $('enroll'), bar: $('bar'),
+  basestat: $('basestat'), forget: $('forget'),
 };
 
 let echo = null;      // wasm bindings
@@ -39,10 +42,63 @@ async function loadCore() {
     conf: m.cwrap('echo_wasm_confidence', 'number', []),
     feat: m.cwrap('echo_wasm_feature', 'number', ['number']),
     modelId: m.cwrap('echo_wasm_model_id', 'string', []),
+    enrolling: m.cwrap('echo_wasm_enrolling', 'number', []),
+    ready: m.cwrap('echo_wasm_ready', 'number', []),
+    baselined: m.cwrap('echo_wasm_baselined', 'number', []),
+    progress: m.cwrap('echo_wasm_enroll_progress', 'number', []),
+    baseline: m.cwrap('echo_wasm_baseline', 'number', ['number']),
+    stage: m.cwrap('echo_wasm_stage_baseline', null, ['number', 'number']),
+    commit: m.cwrap('echo_wasm_commit_baseline', null, []),
   };
-  echo.init(60000);
+  echo.init(60000, ENROLL_MS);
   el.model.textContent = echo.modelId();
+
+  if (!echo.baselined()) {
+    el.basestat.textContent = 'not required';
+    el.forget.disabled = true;
+    return true;
+  }
+  restoreBaseline();
   return true;
+}
+
+/* ---------- baseline persistence ----------
+ * The baseline is eight numbers describing someone's resting physiology.
+ * It stays in this browser and is never sent anywhere. Clearing it forces
+ * re-enrollment, which is the right move if the model is behaving oddly or
+ * the device is shared. */
+
+function restoreBaseline() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(BASELINE_KEY) || 'null'); }
+  catch { saved = null; }
+
+  if (Array.isArray(saved) && saved.length === FEATURES.length &&
+      saved.every(Number.isFinite)) {
+    saved.forEach((v, i) => echo.stage(i, v));
+    echo.commit();
+    el.basestat.textContent = 'restored';
+    el.detail.textContent = 'Baseline restored — ready to classify';
+  } else {
+    el.basestat.textContent = 'not enrolled';
+  }
+}
+
+function saveBaseline() {
+  const b = FEATURES.map((_, i) => echo.baseline(i));
+  try { localStorage.setItem(BASELINE_KEY, JSON.stringify(b)); } catch { /* private mode */ }
+  el.basestat.textContent = 'enrolled';
+}
+
+function forgetBaseline() {
+  try { localStorage.removeItem(BASELINE_KEY); } catch { /* ignore */ }
+  echo.init(60000, ENROLL_MS);
+  beatCount = 0; history = []; lastState = -1; enrolledOnce = false;
+  el.basestat.textContent = 'not enrolled';
+  el.state.dataset.s = '-';
+  el.state.textContent = 'Standby';
+  el.detail.textContent = 'Baseline cleared — enrollment will restart';
+  el.trace.innerHTML = '';
 }
 
 /* ---------- ingest ---------- */
@@ -124,16 +180,38 @@ function stopSim() {
 
 /* ---------- inference + render ---------- */
 
+let enrolledOnce = false;
+
 function ingest(rrMs) {
   if (!echo) return;
   beatCount++;
   el.beats.textContent = beatCount;
   const valid = echo.push(rrMs);
+
+  if (echo.enrolling()) {
+    showEnrolling(echo.progress());
+    return;
+  }
+  if (!enrolledOnce && echo.ready() && echo.baselined()) {
+    enrolledOnce = true;
+    el.enroll.hidden = true;
+    saveBaseline();
+  }
   if (!valid) return;
 
   const f = {};
   FEATURES.forEach((n, i) => { f[n] = echo.feat(i); });
   render({ state: echo.state(), conf: echo.conf(), f });
+}
+
+function showEnrolling(p) {
+  el.enroll.hidden = false;
+  el.bar.style.width = `${Math.round(p * 100)}%`;
+  el.state.dataset.s = '-';
+  el.state.textContent = 'Enrolling';
+  const left = Math.max(0, Math.ceil((1 - p) * ENROLL_MS / 1000));
+  el.detail.textContent = `Learning your baseline — about ${left}s remaining`;
+  el.basestat.textContent = 'enrolling';
 }
 
 let lastState = -1;
@@ -200,7 +278,8 @@ function fail(msg) {
 
 el.connect.addEventListener('click', connect);
 el.sim.addEventListener('click', startSim);
+el.forget.addEventListener('click', forgetBaseline);
 
 loadCore().then((ok) => {
-  if (!ok) { el.connect.disabled = true; el.sim.disabled = true; }
+  if (!ok) { el.connect.disabled = true; el.sim.disabled = true; el.forget.disabled = true; }
 });

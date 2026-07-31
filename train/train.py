@@ -55,19 +55,24 @@ def synthesize(n_per_class=1200, seed=7):
     return np.array(X), np.array(y)
 
 
-def emit_tree(t):
+def emit_tree(t, classes):
     """One sklearn tree -> depth-first preorder packed nodes.
 
     Preorder means the left child always lands immediately after its parent,
     so the C traversal only stores an offset to the right child. Nodes are
     (threshold, right_offset, feature, class); feature -1 marks a leaf.
+
+    `classes` maps sklearn's internal column index to the actual class label.
+    They diverge whenever the training data is missing a class — with only
+    GREEN and RED present, column 1 means RED, not AMBER. Emitting the column
+    index instead of the label silently mislabels every prediction.
     """
     out = []
 
     def walk(i):
         idx = len(out)
         if t.children_left[i] == -1:
-            out.append([0.0, 0, -1, int(np.argmax(t.value[i][0]))])
+            out.append([0.0, 0, -1, int(classes[np.argmax(t.value[i][0])])])
             return idx
         out.append([float(t.threshold[i]), 0, int(t.feature[i]), 0])
         walk(t.children_left[i])            # lands at idx + 1
@@ -81,10 +86,11 @@ def emit_tree(t):
 
 def flatten(forest):
     """Forest -> one contiguous packed node array plus per-tree roots."""
+    classes = np.asarray(forest.classes_, dtype=int)
     nodes, roots = [], []
     for est in forest.estimators_:
         roots.append(len(nodes))
-        nodes.extend(emit_tree(est.tree_))
+        nodes.extend(emit_tree(est.tree_, classes))
     for thr, off, feat, klass in nodes:
         if not -32768 <= off <= 32767:
             raise ValueError(f"right offset {off} exceeds int16; reduce --depth")

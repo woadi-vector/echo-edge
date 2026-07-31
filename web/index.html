@@ -60,6 +60,12 @@ button.armed{border-color:var(--green);color:var(--green)}
   font-family:'Barlow Condensed',sans-serif;margin-top:4px}
 .trace{width:100%;height:56px;display:block;margin-top:14px}
 
+/* ---- enrollment ---- */
+.enroll{margin-top:14px}
+.bar{height:6px;background:var(--panel);border:1px solid var(--rule);overflow:hidden}
+.bar span{display:block;height:100%;width:0;background:var(--amber);transition:width .3s linear}
+@media (prefers-reduced-motion:reduce){.bar span{transition:none}}
+
 /* ---- strip stack: the board ---- */
 .stack{flex:1;overflow-y:auto;padding:14px 28px 40px}
 .strip{
@@ -103,6 +109,7 @@ button.armed{border-color:var(--green);color:var(--green)}
     <div class="btns">
       <button id="connect">Connect Polar H10</button>
       <button id="sim">Run simulated feed</button>
+      <button id="forget">Clear baseline</button>
     </div>
   </div>
 
@@ -113,6 +120,7 @@ button.armed{border-color:var(--green);color:var(--green)}
     <div class="kv"><span>Beats held</span><span id="beats">0</span></div>
     <div class="kv"><span>Inference</span><span id="where">wasm / on-device</span></div>
     <div class="kv"><span>Model</span><span id="model">—</span></div>
+    <div class="kv"><span>Baseline</span><span id="basestat">—</span></div>
   </div>
 
   <div class="link" style="margin-top:auto">
@@ -128,6 +136,10 @@ button.armed{border-color:var(--green);color:var(--green)}
   <section class="hero">
     <h2 class="state" id="state" data-s="-">Standby</h2>
     <div class="sub" id="detail">Waiting for a beat source</div>
+    <div class="enroll" id="enroll" hidden>
+      <div class="bar"><span id="bar"></span></div>
+      <div class="sub">Sit still and breathe normally. Echo is learning your resting baseline — it will not report a state until it has one.</div>
+    </div>
     <svg class="trace" id="trace" preserveAspectRatio="none" aria-hidden="true"></svg>
   </section>
   <section class="stack" id="stack">
