@@ -60,6 +60,16 @@ button.armed{border-color:var(--green);color:var(--green)}
   font-family:'Barlow Condensed',sans-serif;margin-top:4px}
 .trace{width:100%;height:56px;display:block;margin-top:14px}
 
+input.code{
+  font:inherit;font-family:'JetBrains Mono',monospace;font-size:15px;
+  width:100%;padding:9px 12px;letter-spacing:.12em;text-transform:uppercase;
+  background:var(--panel);color:var(--ink);
+  border:1px solid var(--rule);border-radius:0;
+}
+input.code:focus{outline:none;border-color:var(--amber)}
+input.code::placeholder{color:var(--dim);letter-spacing:.12em}
+.hint{color:var(--dim);font-size:10px;line-height:1.5;margin-top:6px}
+
 /* ---- enrollment ---- */
 .enroll{margin-top:14px}
 .bar{height:6px;background:var(--panel);border:1px solid var(--rule);overflow:hidden}
@@ -105,6 +115,13 @@ button.armed{border-color:var(--green);color:var(--green)}
   <div class="mark"><h1>Echo</h1><span>Edge</span></div>
 
   <div>
+    <div class="lbl">Participant</div>
+    <input id="pid" class="code" maxlength="12" placeholder="P01"
+           autocomplete="off" spellcheck="false">
+    <div class="hint">A code, not a name. Each code keeps its own baseline.</div>
+  </div>
+
+  <div>
     <div class="lbl">Source</div>
     <div class="btns">
       <button id="connect">Connect Polar H10</button>
@@ -121,12 +138,15 @@ button.armed{border-color:var(--green);color:var(--green)}
     <div class="kv"><span>Inference</span><span id="where">wasm / on-device</span></div>
     <div class="kv"><span>Model</span><span id="model">—</span></div>
     <div class="kv"><span>Baseline</span><span id="basestat">—</span></div>
+    <div class="kv"><span>Logged</span><span id="logged">0</span></div>
+    <button id="export" style="margin-top:10px" disabled>Export CSV</button>
   </div>
 
   <div class="link" style="margin-top:auto">
     <div class="lbl">Note</div>
     <div style="color:var(--dim);font-size:11px;line-height:1.6">
-      RR intervals stay in this tab. Nothing is transmitted.
+      RR intervals stay in this tab. Nothing is transmitted —
+      export writes a file to this device only.
       Chrome or Edge required — Web Bluetooth is unavailable in Safari.
     </div>
   </div>

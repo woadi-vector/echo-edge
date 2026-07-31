@@ -39,6 +39,13 @@ float echo_wasm_enroll_progress(void)
     return p > 1.0f ? 1.0f : p;
 }
 
+/* Class probabilities, for research export and threshold tuning. */
+float echo_wasm_vote(int i)
+{
+    if (i < 0 || i > 2) return 0.0f;
+    return g_res.votes[i];
+}
+
 float echo_wasm_feature(int i)
 {
     if (i < 0 || i >= ECHO_N_FEATURES) return 0.0f;

@@ -35,8 +35,14 @@ def fit_scale(X):
     return scale
 
 
-def personalize(X, y, groups, n_enroll=DEFAULT_ENROLL, scale=None):
+def personalize(X, y, groups, n_enroll=DEFAULT_ENROLL, scale=None, rest_label=None):
     """Re-express each subject's windows as deviation from their own baseline.
+
+    rest_label=None takes each subject's first n_enroll windows, which is
+    correct only when the recording is known to open at rest (WESAD does).
+    Passing a label instead draws enrollment from that subject's windows
+    carrying it — the faithful model of field enrollment, where you ask the
+    operator to sit still and therefore know the period is resting.
 
     Returns (X, y, groups) with enrollment windows removed.
     """
@@ -56,10 +62,21 @@ def personalize(X, y, groups, n_enroll=DEFAULT_ENROLL, scale=None):
         if Xi.shape[0] <= n_enroll + 4:
             dropped.append(g)
             continue
-        baseline = Xi[:n_enroll].mean(axis=0)
-        out_X.append((Xi[n_enroll:] - baseline) / scale)
-        out_y.append(yi[n_enroll:])
-        out_g.extend([g] * (Xi.shape[0] - n_enroll))
+
+        if rest_label is None:
+            enroll_idx = np.arange(n_enroll)
+        else:
+            rest = np.flatnonzero(yi == rest_label)
+            if rest.size < n_enroll:
+                dropped.append(g)
+                continue
+            enroll_idx = rest[:n_enroll]
+
+        baseline = Xi[enroll_idx].mean(axis=0)
+        keep = np.setdiff1d(np.arange(Xi.shape[0]), enroll_idx)
+        out_X.append((Xi[keep] - baseline) / scale)
+        out_y.append(yi[keep])
+        out_g.extend([g] * keep.size)
 
     if dropped:
         print(f"  baseline: {len(dropped)} subject(s) too short to enroll: {dropped}")

@@ -11,7 +11,8 @@ const HR_SERVICE = 'heart_rate';
 const HR_CHAR = 'heart_rate_measurement';
 const STATES = ['Green', 'Amber', 'Red'];
 const ENROLL_MS = 180000;              // three minutes of quiet
-const BASELINE_KEY = 'echo.baseline';  // per-browser, never transmitted
+const BASELINE_KEY = 'echo.baseline';  // suffixed per participant code
+const DEFAULT_PID = 'P01';
 const FEATURES = ['mean_rr', 'mean_hr', 'sdnn', 'rmssd', 'pnn50', 'rr_slope', 'hr_cv', 'coverage'];
 
 const $ = (id) => document.getElementById(id);
@@ -19,8 +20,21 @@ const el = {
   connect: $('connect'), sim: $('sim'), status: $('status'), device: $('device'),
   beats: $('beats'), model: $('model'), state: $('state'), detail: $('detail'),
   stack: $('stack'), trace: $('trace'), enroll: $('enroll'), bar: $('bar'),
-  basestat: $('basestat'), forget: $('forget'),
+  basestat: $('basestat'), forget: $('forget'), pid: $('pid'),
+  logged: $('logged'), export: $('export'),
 };
+
+/* Every classified window, kept for export. Strips show transitions only;
+ * research needs the whole series. */
+let sessionLog = [];
+let sessionStart = null;
+
+function participant() {
+  const v = (el.pid.value || '').trim().toUpperCase();
+  return v || DEFAULT_PID;
+}
+
+function baselineKey() { return `${BASELINE_KEY}.${participant()}`; }
 
 let echo = null;      // wasm bindings
 let beatCount = 0;
@@ -48,6 +62,7 @@ async function loadCore() {
     progress: m.cwrap('echo_wasm_enroll_progress', 'number', []),
     baseline: m.cwrap('echo_wasm_baseline', 'number', ['number']),
     stage: m.cwrap('echo_wasm_stage_baseline', null, ['number', 'number']),
+    vote: m.cwrap('echo_wasm_vote', 'number', ['number']),
     commit: m.cwrap('echo_wasm_commit_baseline', null, []),
   };
   echo.init(60000, ENROLL_MS);
@@ -70,7 +85,7 @@ async function loadCore() {
 
 function restoreBaseline() {
   let saved = null;
-  try { saved = JSON.parse(localStorage.getItem(BASELINE_KEY) || 'null'); }
+  try { saved = JSON.parse(localStorage.getItem(baselineKey()) || 'null'); }
   catch { saved = null; }
 
   if (Array.isArray(saved) && saved.length === FEATURES.length &&
@@ -86,12 +101,12 @@ function restoreBaseline() {
 
 function saveBaseline() {
   const b = FEATURES.map((_, i) => echo.baseline(i));
-  try { localStorage.setItem(BASELINE_KEY, JSON.stringify(b)); } catch { /* private mode */ }
+  try { localStorage.setItem(baselineKey(), JSON.stringify(b)); } catch { /* private mode */ }
   el.basestat.textContent = 'enrolled';
 }
 
 function forgetBaseline() {
-  try { localStorage.removeItem(BASELINE_KEY); } catch { /* ignore */ }
+  try { localStorage.removeItem(baselineKey()); } catch { /* ignore */ }
   echo.init(60000, ENROLL_MS);
   beatCount = 0; history = []; lastState = -1; enrolledOnce = false;
   el.basestat.textContent = 'not enrolled';
@@ -223,6 +238,20 @@ function render({ state, conf, f }) {
     `${f.mean_hr.toFixed(0)} bpm · rmssd ${f.rmssd.toFixed(0)} ms · ` +
     `confidence ${(conf * 100).toFixed(0)}%`;
 
+  // Log every window, regardless of whether it changes the displayed state.
+  if (sessionStart === null) sessionStart = Date.now();
+  sessionLog.push({
+    t: new Date().toISOString(),
+    elapsed: ((Date.now() - sessionStart) / 1000).toFixed(1),
+    pid: participant(),
+    state: STATES[state].toUpperCase(),
+    conf: conf.toFixed(4),
+    votes: [0, 1, 2].map((i) => echo.vote(i).toFixed(4)),
+    f: FEATURES.map((n) => f[n].toFixed(4)),
+  });
+  el.logged.textContent = sessionLog.length;
+  el.export.disabled = false;
+
   history.push(f.mean_hr);
   if (history.length > 220) history.shift();
   drawTrace(state);
@@ -269,6 +298,46 @@ function drawTrace(state) {
        stroke="var(${stroke})" vector-effect="non-scaling-stroke"/>`;
 }
 
+function exportCSV() {
+  if (!sessionLog.length) return;
+  const header = ['timestamp', 'elapsed_s', 'participant', 'state',
+                  'confidence', 'p_green', 'p_amber', 'p_red',
+                  ...FEATURES, 'model'].join(',');
+  const model = echo.modelId();
+  const rows = sessionLog.map((r) =>
+    [r.t, r.elapsed, r.pid, r.state, r.conf, ...r.votes, ...r.f, model].join(','));
+
+  const blob = new Blob([[header, ...rows].join('\n')], { type: 'text/csv' });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = `echo_${participant()}_${stamp}.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+function switchParticipant() {
+  // A new code is a new person: drop the session and re-enroll.
+  stopSim();
+  sessionLog = [];
+  sessionStart = null;
+  beatCount = 0;
+  history = [];
+  lastState = -1;
+  enrolledOnce = false;
+  el.logged.textContent = '0';
+  el.export.disabled = true;
+  el.beats.textContent = '0';
+  el.trace.innerHTML = '';
+  el.state.dataset.s = '-';
+  el.state.textContent = 'Standby';
+  el.stack.innerHTML =
+    '<div class="empty">No classifications yet for this participant.</div>';
+  echo.init(60000, ENROLL_MS);
+  if (echo.baselined()) restoreBaseline();
+  el.detail.textContent = `Participant ${participant()}`;
+}
+
 function fail(msg) {
   el.status.textContent = 'error';
   el.detail.textContent = msg;
@@ -279,6 +348,8 @@ function fail(msg) {
 el.connect.addEventListener('click', connect);
 el.sim.addEventListener('click', startSim);
 el.forget.addEventListener('click', forgetBaseline);
+el.export.addEventListener('click', exportCSV);
+el.pid.addEventListener('change', switchParticipant);
 
 loadCore().then((ok) => {
   if (!ok) { el.connect.disabled = true; el.sim.disabled = true; el.forget.disabled = true; }

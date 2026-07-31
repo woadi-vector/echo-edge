@@ -22,7 +22,7 @@ emcc core/echo.c wasm/echo_wasm.c \
   -s ENVIRONMENT=web \
   -s ALLOW_MEMORY_GROWTH=1 \
   -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
-  -s EXPORTED_FUNCTIONS='["_echo_wasm_init","_echo_wasm_push","_echo_wasm_state","_echo_wasm_confidence","_echo_wasm_feature","_echo_wasm_valid","_echo_wasm_enrolling","_echo_wasm_ready","_echo_wasm_baselined","_echo_wasm_enroll_progress","_echo_wasm_baseline","_echo_wasm_stage_baseline","_echo_wasm_commit_baseline","_echo_wasm_model_id","_malloc","_free"]' \
+  -s EXPORTED_FUNCTIONS='["_echo_wasm_init","_echo_wasm_push","_echo_wasm_state","_echo_wasm_confidence","_echo_wasm_feature","_echo_wasm_vote","_echo_wasm_valid","_echo_wasm_enrolling","_echo_wasm_ready","_echo_wasm_baselined","_echo_wasm_enroll_progress","_echo_wasm_baseline","_echo_wasm_stage_baseline","_echo_wasm_commit_baseline","_echo_wasm_model_id","_malloc","_free"]' \
   -o web/echo.js
 
 echo "built web/echo.js + web/echo.wasm"

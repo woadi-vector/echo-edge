@@ -31,6 +31,21 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 STATES = ["GREEN", "AMBER", "RED"]
 
 
+def band(proba, lo, hi):
+    """Map p(RED) to a three-state readout.
+
+    A two-class corpus cannot teach AMBER, but the model still reports how
+    confident it is. Calling the uncertain middle AMBER is honest labelling of
+    what the model actually knows — "transitioning or unclear" — rather than
+    an invented class. Below lo is GREEN, above hi is RED, between is AMBER.
+    """
+    p_red = np.asarray(proba)
+    out = np.full(p_red.shape, 1, dtype=int)
+    out[p_red < lo] = 0
+    out[p_red > hi] = 2
+    return out
+
+
 def synthesize(n_per_class=1200, seed=7):
     """Fabricated RR windows with class-dependent HR and HRV structure."""
     rng = np.random.default_rng(seed)
@@ -127,7 +142,8 @@ def carray(name, ctype, values, fmt=str, per_line=12):
     return f"static const {ctype} {name}[{len(values)}] = {{\n{body}\n}};\n"
 
 
-def export_header(path, scaler, forest, model_id, pop_scale=None):
+def export_header(path, scaler, forest, model_id, pop_scale=None,
+                  amber_band=None):
     nodes, roots, leaf_probs = flatten(forest)
     def f(v):
         s = f"{v:.9g}"
@@ -150,6 +166,9 @@ def export_header(path, scaler, forest, model_id, pop_scale=None):
         f"#define ECHO_N_TREES {len(roots)}",
         f"#define ECHO_N_NODES {len(nodes)}",
         f"#define ECHO_BASELINED {1 if baselined else 0}",
+        f"#define ECHO_AMBER_BAND {1 if amber_band else 0}",
+        f"#define ECHO_BAND_LO {f(amber_band[0]) if amber_band else '0.0f'}",
+        f"#define ECHO_BAND_HI {f(amber_band[1]) if amber_band else '1.0f'}",
         "",
         carray("ECHO_POP_INV_SCALE", "float", pop_inv, f),
         carray("ECHO_SCALER_MEAN", "float", list(scaler.mean_), f),
@@ -208,8 +227,16 @@ def main():
     ap.add_argument("--root", default=None, help="dataset directory")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--baseline", type=int, default=0, metavar="N",
-                    help="per-operator baselining: use each subject's first N "
-                         "windows as an enrollment reference (0 = off)")
+                    help="per-operator baselining: enroll each subject on N "
+                         "windows (0 = off)")
+    ap.add_argument("--amber-band", nargs=2, type=float, metavar=("LO", "HI"),
+                    default=None,
+                    help="derive AMBER from classifier confidence: p(RED) "
+                         "below LO is GREEN, above HI is RED, between is AMBER")
+    ap.add_argument("--enroll-rest", action="store_true",
+                    help="draw enrollment from GREEN-labelled windows instead "
+                         "of the first N; use when the recording does not "
+                         "reliably begin at rest")
     args = ap.parse_args()
 
     if args.dataset == "synthetic":
@@ -227,7 +254,8 @@ def main():
         n_before = len(X)
         pop_scale = fit_scale(X)
         X, y, groups = personalize(X, y, groups, n_enroll=args.baseline,
-                                   scale=pop_scale)
+                                   scale=pop_scale,
+                                   rest_label=0 if args.enroll_rest else None)
         print(f"  baselined against each subject's first {args.baseline} windows "
               f"({n_before} -> {len(X)} windows)")
 
@@ -264,6 +292,31 @@ def main():
         sc, fo = fit(X, y, args)
         pred = fo.predict(sc.transform(X))
 
+    if args.amber_band:
+        lo, hi = args.amber_band
+        red_col = list(fo.classes_).index(2) if 2 in fo.classes_ else None
+        if red_col is None:
+            print("  amber-band: no RED class in this model, skipping")
+            args.amber_band = None
+        else:
+            p_red = fo.predict_proba(sc.transform(X))[:, red_col]
+            banded = band(p_red, lo, hi)
+            n = len(banded)
+            print(f"\namber band [{lo}, {hi}] applied to p(RED):")
+            for i, name in enumerate(STATES):
+                share = (banded == i).mean()
+                print(f"  {name:<6} {share:6.1%} of windows", end="")
+                if i == 1 and share > 0:
+                    # What the band is actually catching, by true label.
+                    true = y[banded == 1]
+                    frac_red = (true == 2).mean()
+                    print(f"   (of these, {frac_red:.1%} are truly RED)", end="")
+                print()
+            print(f"  windows: {n}")
+            print("  NOTE: AMBER here is a confidence band, not a learned "
+                  "class. It reports uncertainty, and is unvalidated against "
+                  "graded physiological load.")
+
     if args.dataset == "synthetic":
         print("NOTE: trained on synthetic data. Accuracy above is not evidence.")
 
@@ -273,8 +326,14 @@ def main():
                     "feats": FEATURE_NAMES}).encode()
     ).hexdigest()[:12]
 
-    export_header(ROOT / "core" / "echo_model.h", sc, fo, model_id, pop_scale)
-    export_testvectors(ROOT / "bench" / "testvectors.h", X[:64], pred[:64])
+    export_header(ROOT / "core" / "echo_model.h", sc, fo, model_id, pop_scale,
+                  args.amber_band)
+    fixture_pred = pred[:64]
+    if args.amber_band:
+        red_col = list(fo.classes_).index(2)
+        p64 = fo.predict_proba(sc.transform(X[:64]))[:, red_col]
+        fixture_pred = band(p64, args.amber_band[0], args.amber_band[1])
+    export_testvectors(ROOT / "bench" / "testvectors.h", X[:64], fixture_pred)
     print(f"wrote core/echo_model.h  (model {model_id}, {args.trees} trees, "
           f"depth {args.depth}, data={args.dataset})")
     print("wrote bench/testvectors.h")

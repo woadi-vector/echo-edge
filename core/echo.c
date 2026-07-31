@@ -112,12 +112,28 @@ void echo_classify(const float *features, echo_result_t *out)
         acc[2] += p[2];
     }
 
+    for (int c = 0; c < 3; c++) out->votes[c] = acc[c] / (float)ECHO_N_TREES;
+
+#if ECHO_AMBER_BAND
+    /* The corpus had no AMBER to learn, so the middle state is derived from
+     * the model's own uncertainty: confidently calm, confidently loaded, or
+     * neither. This reports what the model knows rather than inventing a
+     * class it was never shown. */
+    const float p_red = out->votes[2];
+    int best = (p_red < ECHO_BAND_LO) ? ECHO_GREEN
+             : (p_red > ECHO_BAND_HI) ? ECHO_RED
+             : ECHO_AMBER;
+#else
     int best = 0;
     for (int c = 1; c < 3; c++) if (acc[c] > acc[best]) best = c;
-
-    for (int c = 0; c < 3; c++) out->votes[c] = acc[c] / (float)ECHO_N_TREES;
+#endif
     out->state      = (echo_state_t)best;
+#if ECHO_AMBER_BAND
+    out->confidence = (best == ECHO_AMBER) ? 1.0f - out->votes[2]
+                                           : out->votes[best];
+#else
     out->confidence = out->votes[best];
+#endif
     if (features != out->features && features != out->relative)
         memcpy(out->features, features, sizeof(float) * ECHO_N_FEATURES);
     out->valid = 1;
