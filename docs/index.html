@@ -122,11 +122,31 @@ input.code::placeholder{color:var(--dim);letter-spacing:.12em}
   </div>
 
   <div>
+    <div class="lbl">Session note</div>
+    <input id="note" class="code" maxlength="60" placeholder="e.g. post-training"
+           autocomplete="off">
+    <div class="hint">Written into every exported row.</div>
+  </div>
+
+  <div>
     <div class="lbl">Source</div>
     <div class="btns">
       <button id="connect">Connect Polar H10</button>
       <button id="sim">Run simulated feed</button>
       <button id="forget">Clear baseline</button>
+    </div>
+  </div>
+
+  <div>
+    <div class="lbl">Baseline file</div>
+    <div class="btns">
+      <button id="savebase" disabled>Save baseline</button>
+      <button id="loadbase">Load baseline</button>
+      <input id="basefile" type="file" accept=".json" hidden>
+    </div>
+    <div class="hint">Baselines live in this browser only. Save one to carry a
+      participant to another device — otherwise they re-enroll against a
+      different reference and the change is invisible.</div>
     </div>
   </div>
 

@@ -21,7 +21,8 @@ const el = {
   beats: $('beats'), model: $('model'), state: $('state'), detail: $('detail'),
   stack: $('stack'), trace: $('trace'), enroll: $('enroll'), bar: $('bar'),
   basestat: $('basestat'), forget: $('forget'), pid: $('pid'),
-  logged: $('logged'), export: $('export'),
+  logged: $('logged'), export: $('export'), note: $('note'),
+  savebase: $('savebase'), loadbase: $('loadbase'), basefile: $('basefile'),
 };
 
 /* Every classified window, kept for export. Strips show transitions only;
@@ -93,9 +94,11 @@ function restoreBaseline() {
     saved.forEach((v, i) => echo.stage(i, v));
     echo.commit();
     el.basestat.textContent = 'restored';
+    el.savebase.disabled = false;
     el.detail.textContent = 'Baseline restored — ready to classify';
   } else {
     el.basestat.textContent = 'not enrolled';
+    el.savebase.disabled = true;
   }
 }
 
@@ -103,6 +106,65 @@ function saveBaseline() {
   const b = FEATURES.map((_, i) => echo.baseline(i));
   try { localStorage.setItem(baselineKey(), JSON.stringify(b)); } catch { /* private mode */ }
   el.basestat.textContent = 'enrolled';
+  el.savebase.disabled = false;
+}
+
+/* ---------- baseline as a portable file ----------
+ * Local storage is per-browser and per-device. Without a file, moving a
+ * participant to another laptop silently re-enrolls them against a different
+ * reference, which looks like a physiological step change and is not one. */
+
+function downloadBaseline() {
+  const b = FEATURES.map((_, i) => echo.baseline(i));
+  if (!b.every(Number.isFinite)) return;
+
+  const payload = {
+    participant: participant(),
+    created: new Date().toISOString(),
+    model: echo.modelId(),
+    features: FEATURES,
+    baseline: b,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)],
+                        { type: 'application/json' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = `baseline_${participant()}.json`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+async function uploadBaseline(file) {
+  let data;
+  try { data = JSON.parse(await file.text()); }
+  catch { fail('Baseline file is not readable JSON'); return; }
+
+  if (!Array.isArray(data.baseline) || data.baseline.length !== FEATURES.length
+      || !data.baseline.every(Number.isFinite)) {
+    fail('Baseline file is malformed'); return;
+  }
+  // Feature order is part of the contract; a mismatch means a different build.
+  if (Array.isArray(data.features) &&
+      data.features.join(',') !== FEATURES.join(',')) {
+    fail('Baseline was made with a different feature set — re-enroll instead');
+    return;
+  }
+  if (data.participant && data.participant !== participant()) {
+    el.pid.value = data.participant;
+    switchParticipant();
+  }
+
+  data.baseline.forEach((v, i) => echo.stage(i, v));
+  echo.commit();
+  enrolledOnce = true;
+  el.enroll.hidden = true;
+  el.basestat.textContent = 'loaded from file';
+  el.savebase.disabled = false;
+  const when = (data.created || '').slice(0, 10);
+  el.detail.textContent =
+    `Baseline loaded for ${participant()}${when ? ` (enrolled ${when})` : ''}`;
+  try { localStorage.setItem(baselineKey(), JSON.stringify(data.baseline)); }
+  catch { /* private mode */ }
 }
 
 function forgetBaseline() {
@@ -110,6 +172,7 @@ function forgetBaseline() {
   echo.init(60000, ENROLL_MS);
   beatCount = 0; history = []; lastState = -1; enrolledOnce = false;
   el.basestat.textContent = 'not enrolled';
+  el.savebase.disabled = true;
   el.state.dataset.s = '-';
   el.state.textContent = 'Standby';
   el.detail.textContent = 'Baseline cleared — enrollment will restart';
@@ -244,6 +307,7 @@ function render({ state, conf, f }) {
     t: new Date().toISOString(),
     elapsed: ((Date.now() - sessionStart) / 1000).toFixed(1),
     pid: participant(),
+    note: (el.note.value || '').replace(/[",\n]/g, ' ').trim(),
     state: STATES[state].toUpperCase(),
     conf: conf.toFixed(4),
     votes: [0, 1, 2].map((i) => echo.vote(i).toFixed(4)),
@@ -300,12 +364,13 @@ function drawTrace(state) {
 
 function exportCSV() {
   if (!sessionLog.length) return;
-  const header = ['timestamp', 'elapsed_s', 'participant', 'state',
+  const header = ['timestamp', 'elapsed_s', 'participant', 'note', 'state',
                   'confidence', 'p_green', 'p_amber', 'p_red',
                   ...FEATURES, 'model'].join(',');
   const model = echo.modelId();
   const rows = sessionLog.map((r) =>
-    [r.t, r.elapsed, r.pid, r.state, r.conf, ...r.votes, ...r.f, model].join(','));
+    [r.t, r.elapsed, r.pid, r.note, r.state, r.conf,
+     ...r.votes, ...r.f, model].join(','));
 
   const blob = new Blob([[header, ...rows].join('\n')], { type: 'text/csv' });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
@@ -350,6 +415,12 @@ el.sim.addEventListener('click', startSim);
 el.forget.addEventListener('click', forgetBaseline);
 el.export.addEventListener('click', exportCSV);
 el.pid.addEventListener('change', switchParticipant);
+el.savebase.addEventListener('click', downloadBaseline);
+el.loadbase.addEventListener('click', () => el.basefile.click());
+el.basefile.addEventListener('change', (e) => {
+  if (e.target.files[0]) uploadBaseline(e.target.files[0]);
+  e.target.value = '';
+});
 
 loadCore().then((ok) => {
   if (!ok) { el.connect.disabled = true; el.sim.disabled = true; el.forget.disabled = true; }
