@@ -14,6 +14,18 @@
 extern "C" {
 #endif
 
+/* Packed decision node — 8 bytes, so eight nodes share a 64-byte cache line.
+ * The left child is always the next node in memory (trees are emitted in
+ * depth-first preorder), so only the right child needs an index, stored as a
+ * relative offset. This replaces five parallel arrays totalling 20 bytes per
+ * node with one contiguous array at 8. */
+typedef struct {
+    float   threshold;  /* split point, or unused on a leaf */
+    int16_t right_off;  /* offset to right child from this node */
+    int8_t  feature;    /* feature index, or -1 to mark a leaf */
+    uint8_t klass;      /* predicted class on a leaf */
+} echo_node_t;
+
 typedef enum {
     ECHO_GREEN = 0,
     ECHO_AMBER = 1,

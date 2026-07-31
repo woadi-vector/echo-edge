@@ -99,12 +99,10 @@ void echo_classify(const float *features, echo_result_t *out)
 
     int tally[3] = {0, 0, 0};
     for (int t = 0; t < ECHO_N_TREES; t++) {
-        int32_t node = ECHO_TREE_ROOT[t];
-        while (ECHO_FEATURE[node] >= 0) {
-            node = (z[ECHO_FEATURE[node]] <= ECHO_THRESHOLD[node])
-                 ? ECHO_LEFT[node] : ECHO_RIGHT[node];
-        }
-        tally[ECHO_LEAF_CLASS[node]]++;
+        const echo_node_t *n = &ECHO_NODES[ECHO_TREE_ROOT[t]];
+        while (n->feature >= 0)
+            n = (z[n->feature] <= n->threshold) ? n + 1 : n + n->right_off;
+        tally[n->klass]++;
     }
 
     int best = 0;
