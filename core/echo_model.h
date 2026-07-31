@@ -3,7 +3,7 @@
 #define ECHO_MODEL_H
 #include "echo.h"
 
-#define ECHO_MODEL_ID "06a6a1c33e55"
+#define ECHO_MODEL_ID "930849cde5ed"
 #define ECHO_N_TREES 25
 #define ECHO_N_NODES 2025
 #define ECHO_BASELINED 1

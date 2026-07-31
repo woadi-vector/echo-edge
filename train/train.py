@@ -323,6 +323,8 @@ def main():
     model_id = hashlib.sha256(
         json.dumps({"trees": args.trees, "depth": args.depth, "seed": args.seed,
                     "data": args.dataset, "baseline": args.baseline,
+                    "enroll_rest": args.enroll_rest,
+                    "amber_band": args.amber_band,
                     "feats": FEATURE_NAMES}).encode()
     ).hexdigest()[:12]
 
