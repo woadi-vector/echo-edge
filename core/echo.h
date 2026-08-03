@@ -54,6 +54,9 @@ typedef struct {
     uint16_t count;                /* beats currently held */
     float    span_ms;              /* sum of held RR intervals */
     float    window_ms;            /* target window duration */
+    float    last_accepted;        /* previous kept interval, for the relative filter */
+    uint32_t n_accepted;           /* intervals kept */
+    uint32_t n_rejected;           /* intervals dropped as artifacts */
 } echo_window_t;
 
 /* Per-operator enrollment state.
@@ -80,15 +83,31 @@ typedef struct {
     float        votes[3];                   /* GREEN / AMBER / RED */
     float        features[ECHO_N_FEATURES];  /* raw, pre-scaling */
     float        relative[ECHO_N_FEATURES];  /* deviation from the operator's baseline */
+    float        quality;                    /* accepted / pushed, 0..1 */
     int          valid;                      /* 0 until the window fills */
     int          enrolling;                  /* 1 while the baseline is still forming */
 } echo_result_t;
 
 void echo_window_init(echo_window_t *w, float window_ms);
 
-/* Push one beat-to-beat interval in milliseconds. Rejects implausible
- * intervals (<250ms / >2500ms) as ectopic or dropped-beat artifacts. */
+/* Push one beat-to-beat interval in milliseconds.
+ *
+ * Two filters. The absolute one rejects intervals outside 250-2500 ms. That
+ * alone is not enough: a dropped beat merges two intervals into one of roughly
+ * double length, and at 73 bpm a doubled 820 ms interval is 1640 ms — well
+ * inside the plausible range, yet it inflates SDNN across the whole window.
+ *
+ * So a relative filter also rejects any interval differing by more than
+ * ECHO_RR_JUMP from its predecessor. Real beat-to-beat change is gradual;
+ * a sudden near-doubling or halving is a detection artifact, not physiology.
+ *
+ * Returns 1 if the interval was accepted. */
 int  echo_window_push(echo_window_t *w, float rr_ms);
+
+/* Fraction of pushed intervals that were accepted, 0..1. Sustained values
+ * below ~0.9 mean poor electrode contact — the features are unreliable and
+ * the state should not be trusted. */
+float echo_window_quality(const echo_window_t *w);
 
 /* Compute the feature vector. Returns 1 when the window holds enough
  * beats to be meaningful, 0 otherwise. */

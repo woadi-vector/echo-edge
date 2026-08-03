@@ -7,6 +7,7 @@
 #define ECHO_MIN_BEATS 20
 #define ECHO_RR_MIN 250.0f
 #define ECHO_RR_MAX 2500.0f
+#define ECHO_RR_JUMP 0.25f   /* max fractional change between consecutive beats */
 
 void echo_window_init(echo_window_t *w, float window_ms)
 {
@@ -23,7 +24,25 @@ static float win_at(const echo_window_t *w, uint16_t i)
 
 int echo_window_push(echo_window_t *w, float rr_ms)
 {
-    if (!(rr_ms >= ECHO_RR_MIN && rr_ms <= ECHO_RR_MAX)) return 0;
+    if (!(rr_ms >= ECHO_RR_MIN && rr_ms <= ECHO_RR_MAX)) {
+        w->n_rejected++;
+        return 0;
+    }
+
+    /* Relative filter. Skipped for the first interval, which has no
+     * predecessor to compare against. */
+    if (w->last_accepted > 0.0f) {
+        const float ratio = rr_ms / w->last_accepted;
+        if (ratio < 1.0f - ECHO_RR_JUMP || ratio > 1.0f + ECHO_RR_JUMP) {
+            w->n_rejected++;
+            /* Do not update last_accepted: a run of rejections should stay
+             * anchored to the last trustworthy beat, not drift toward the
+             * artifacts. */
+            return 0;
+        }
+    }
+    w->last_accepted = rr_ms;
+    w->n_accepted++;
 
     if (w->count == ECHO_MAX_BEATS) {
         w->span_ms -= win_at(w, 0);
@@ -39,6 +58,12 @@ int echo_window_push(echo_window_t *w, float rr_ms)
         w->count--;
     }
     return 1;
+}
+
+float echo_window_quality(const echo_window_t *w)
+{
+    const uint32_t total = w->n_accepted + w->n_rejected;
+    return total ? (float)w->n_accepted / (float)total : 1.0f;
 }
 
 int echo_features(const echo_window_t *w, float *out)
@@ -226,7 +251,9 @@ const float *echo_operator_baseline(const echo_operator_t *op)
 void echo_operator_step(echo_operator_t *op, float rr_ms, echo_result_t *out)
 {
     out->enrolling = 0;
+    out->quality = echo_window_quality(&op->win);
     if (!echo_window_push(&op->win, rr_ms)) { out->valid = 0; return; }
+    out->quality = echo_window_quality(&op->win);
     if (!echo_features(&op->win, out->features)) { out->valid = 0; return; }
 
     if (!op->ready) {

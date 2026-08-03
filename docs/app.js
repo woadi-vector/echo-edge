@@ -23,7 +23,19 @@ const el = {
   basestat: $('basestat'), forget: $('forget'), pid: $('pid'),
   logged: $('logged'), export: $('export'), note: $('note'),
   savebase: $('savebase'), loadbase: $('loadbase'), basefile: $('basefile'),
+  temp: $('temp'), rh: $('rh'), wbgt: $('wbgt'), setting: $('setting'),
+  quality: $('quality'),
 };
+
+/* Environment is read at log time, not at session start, so a value entered
+ * mid-session applies from that point forward rather than being lost. */
+function environment() {
+  const num = (elem) => {
+    const v = parseFloat(elem.value);
+    return Number.isFinite(v) ? String(v) : '';
+  };
+  return [num(el.temp), num(el.rh), num(el.wbgt), el.setting.value];
+}
 
 /* Every classified window, kept for export. Strips show transitions only;
  * research needs the whole series. */
@@ -64,6 +76,7 @@ async function loadCore() {
     baseline: m.cwrap('echo_wasm_baseline', 'number', ['number']),
     stage: m.cwrap('echo_wasm_stage_baseline', null, ['number', 'number']),
     vote: m.cwrap('echo_wasm_vote', 'number', ['number']),
+    quality: m.cwrap('echo_wasm_quality', 'number', []),
     commit: m.cwrap('echo_wasm_commit_baseline', null, []),
   };
   echo.init(60000, ENROLL_MS);
@@ -266,6 +279,13 @@ function ingest(rrMs) {
   el.beats.textContent = beatCount;
   const valid = echo.push(rrMs);
 
+  // Signal quality is the share of intervals surviving the artifact filters.
+  // Poor electrode contact shows up here long before it looks like physiology.
+  const q = echo.quality();
+  el.quality.textContent = `${(q * 100).toFixed(0)}%`;
+  el.quality.style.color = q < 0.9 ? 'var(--red)'
+                         : q < 0.97 ? 'var(--amber)' : 'var(--dim)';
+
   if (echo.enrolling()) {
     showEnrolling(echo.progress());
     return;
@@ -308,6 +328,8 @@ function render({ state, conf, f }) {
     elapsed: ((Date.now() - sessionStart) / 1000).toFixed(1),
     pid: participant(),
     note: (el.note.value || '').replace(/[",\n]/g, ' ').trim(),
+    env: environment(),
+    quality: echo.quality().toFixed(3),
     state: STATES[state].toUpperCase(),
     conf: conf.toFixed(4),
     votes: [0, 1, 2].map((i) => echo.vote(i).toFixed(4)),
@@ -364,12 +386,13 @@ function drawTrace(state) {
 
 function exportCSV() {
   if (!sessionLog.length) return;
-  const header = ['timestamp', 'elapsed_s', 'participant', 'note', 'state',
+  const header = ['timestamp', 'elapsed_s', 'participant', 'note',
+                  'temp_f', 'humidity_pct', 'wbgt_f', 'setting', 'signal_quality', 'state',
                   'confidence', 'p_green', 'p_amber', 'p_red',
                   ...FEATURES, 'model'].join(',');
   const model = echo.modelId();
   const rows = sessionLog.map((r) =>
-    [r.t, r.elapsed, r.pid, r.note, r.state, r.conf,
+    [r.t, r.elapsed, r.pid, r.note, ...r.env, r.quality, r.state, r.conf,
      ...r.votes, ...r.f, model].join(','));
 
   const blob = new Blob([[header, ...rows].join('\n')], { type: 'text/csv' });

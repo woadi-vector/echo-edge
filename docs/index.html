@@ -70,6 +70,20 @@ input.code:focus{outline:none;border-color:var(--amber)}
 input.code::placeholder{color:var(--dim);letter-spacing:.12em}
 .hint{color:var(--dim);font-size:10px;line-height:1.5;margin-top:6px}
 
+.envgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.envgrid label{
+  display:flex;flex-direction:column;gap:3px;
+  font-family:'Barlow Condensed',sans-serif;font-size:10px;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--dim);
+}
+.envgrid input,.envgrid select{
+  font:inherit;font-family:'JetBrains Mono',monospace;font-size:13px;
+  padding:6px 8px;background:var(--panel);color:var(--ink);
+  border:1px solid var(--rule);border-radius:0;letter-spacing:normal;
+  text-transform:none;width:100%;
+}
+.envgrid input:focus,.envgrid select:focus{outline:none;border-color:var(--amber)}
+
 /* ---- enrollment ---- */
 .enroll{margin-top:14px}
 .bar{height:6px;background:var(--panel);border:1px solid var(--rule);overflow:hidden}
@@ -129,6 +143,24 @@ input.code::placeholder{color:var(--dim);letter-spacing:.12em}
   </div>
 
   <div>
+    <div class="lbl">Environment</div>
+    <div class="envgrid">
+      <label>Temp °F<input id="temp" type="number" step="1" placeholder="—"></label>
+      <label>RH %<input id="rh" type="number" step="1" placeholder="—"></label>
+      <label>WBGT °F<input id="wbgt" type="number" step="0.1" placeholder="—"></label>
+      <label>Setting
+        <select id="setting">
+          <option value="">—</option>
+          <option value="indoor">indoor</option>
+          <option value="outdoor">outdoor</option>
+        </select>
+      </label>
+    </div>
+    <div class="hint">Recorded on every row. Heat raises HR and suppresses HRV
+      independently of training load — unrecorded, it looks like fatigue.</div>
+  </div>
+
+  <div>
     <div class="lbl">Source</div>
     <div class="btns">
       <button id="connect">Connect Polar H10</button>
@@ -155,6 +187,7 @@ input.code::placeholder{color:var(--dim);letter-spacing:.12em}
     <div class="kv"><span>Status</span><span id="status">standby</span></div>
     <div class="kv"><span>Device</span><span id="device">—</span></div>
     <div class="kv"><span>Beats held</span><span id="beats">0</span></div>
+    <div class="kv"><span>Signal</span><span id="quality">—</span></div>
     <div class="kv"><span>Inference</span><span id="where">wasm / on-device</span></div>
     <div class="kv"><span>Model</span><span id="model">—</span></div>
     <div class="kv"><span>Baseline</span><span id="basestat">—</span></div>

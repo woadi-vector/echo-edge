@@ -24,6 +24,10 @@ int echo_wasm_push(float rr_ms)
 }
 
 int   echo_wasm_valid(void)      { return g_res.valid; }
+
+/* Fraction of intervals accepted by the artifact filters, 0..1.
+ * Sustained values below ~0.9 mean poor electrode contact. */
+float echo_wasm_quality(void)    { return g_res.quality; }
 int   echo_wasm_enrolling(void)  { return g_res.enrolling; }
 int   echo_wasm_baselined(void)  { return ECHO_BASELINED; }
 int   echo_wasm_ready(void)      { return g_op.ready; }
