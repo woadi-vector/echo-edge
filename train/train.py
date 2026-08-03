@@ -233,6 +233,12 @@ def main():
                     default=None,
                     help="derive AMBER from classifier confidence: p(RED) "
                          "below LO is GREEN, above HI is RED, between is AMBER")
+    ap.add_argument("--drop", default="", metavar="NAMES",
+                    help="comma-separated features to withhold from the model, "
+                         "e.g. --drop mean_hr,mean_rr. Columns are flattened to "
+                         "a constant so the forest cannot split on them; the "
+                         "feature vector keeps its shape and the C ABI is "
+                         "unchanged.")
     ap.add_argument("--enroll-rest", action="store_true",
                     help="draw enrollment from GREEN-labelled windows instead "
                          "of the first N; use when the recording does not "
@@ -259,6 +265,16 @@ def main():
         print(f"  baselined against each subject's first {args.baseline} windows "
               f"({n_before} -> {len(X)} windows)")
 
+    if args.drop:
+        names = [n.strip() for n in args.drop.split(",") if n.strip()]
+        unknown = [n for n in names if n not in FEATURE_NAMES]
+        if unknown:
+            ap.error(f"unknown feature(s): {unknown}. Known: {FEATURE_NAMES}")
+        for n in names:
+            X[:, FEATURE_NAMES.index(n)] = 0.0
+        print(f"  withheld: {', '.join(names)} "
+              f"({len(FEATURE_NAMES) - len(names)} features active)")
+
     present = sorted(set(y))
     names = [STATES[i] for i in present]
     print(f"{args.dataset}: {len(X)} windows, {len(set(groups))} groups, "
@@ -284,6 +300,13 @@ def main():
 
         sc, fo = fit(X, y, args)
         pred = fo.predict(sc.transform(X))
+
+        print("feature importance:")
+        for n, imp in sorted(zip(FEATURE_NAMES, fo.feature_importances_),
+                             key=lambda t: -t[1]):
+            print(f"  {n:9s} {imp:.3f}")
+        print()
+
         print(classification_report(y, pred, labels=present,
                                     target_names=names, digits=3,
                                     zero_division=0))
@@ -325,6 +348,7 @@ def main():
                     "data": args.dataset, "baseline": args.baseline,
                     "enroll_rest": args.enroll_rest,
                     "amber_band": args.amber_band,
+                    "drop": args.drop,
                     "feats": FEATURE_NAMES}).encode()
     ).hexdigest()[:12]
 

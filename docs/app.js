@@ -394,8 +394,17 @@ function exportCSV() {
                   ...FEATURES, 'model'].join(',');
   const model = echo.modelId();
   const rows = sessionLog.map((r) =>
-    [r.t, r.elapsed, r.pid, r.note, ...r.env, r.quality, r.state, r.conf,
+    [r.t, r.elapsed, r.pid, r.note, ...r.env, r.quality, r.state, r.raw, r.conf,
      ...r.votes, ...r.f, model].join(','));
+
+  // Header and rows are built separately, so they can silently drift apart —
+  // a missing field shifts every later column and the file still looks valid.
+  const nHead = header.split(',').length;
+  const bad = rows.findIndex((r) => r.split(',').length !== nHead);
+  if (bad !== -1) {
+    fail(`Export aborted: row has ${rows[bad].split(',').length} fields, header has ${nHead}`);
+    return;
+  }
 
   const blob = new Blob([[header, ...rows].join('\n')], { type: 'text/csv' });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
