@@ -232,9 +232,15 @@ void echo_operator_init(echo_operator_t *op, float window_ms, float enroll_ms)
     memset(op, 0, sizeof(*op));
     echo_window_init(&op->win, window_ms);
     op->enroll_ms = (enroll_ms > 0.0f) ? enroll_ms : 180000.0f;
+    op->hysteresis = ECHO_HYSTERESIS_BEATS;
 #if !ECHO_BASELINED
     op->ready = 1;              /* model needs no baseline */
 #endif
+}
+
+void echo_operator_set_hysteresis(echo_operator_t *op, uint16_t beats)
+{
+    op->hysteresis = beats;
 }
 
 void echo_operator_set_baseline(echo_operator_t *op, const float *baseline)
@@ -275,6 +281,30 @@ void echo_operator_step(echo_operator_t *op, float rr_ms, echo_result_t *out)
 
     echo_relativize(out->features, op->baseline, out->relative);
     echo_classify(out->relative, out);
+    out->raw_state = out->state;
+
+    /* Hysteresis. The first valid classification commits immediately — there is
+     * nothing to debounce against yet. After that, a different state must hold
+     * for `hysteresis` consecutive beats before it is reported. */
+    if (!op->has_state || op->hysteresis == 0) {
+        op->committed = out->raw_state;
+        op->pending = out->raw_state;
+        op->pending_beats = 0;
+        op->has_state = 1;
+    } else if (out->raw_state == op->committed) {
+        op->pending = op->committed;
+        op->pending_beats = 0;
+    } else if (out->raw_state == op->pending) {
+        if (++op->pending_beats >= op->hysteresis) {
+            op->committed = op->pending;
+            op->pending_beats = 0;
+        }
+    } else {
+        op->pending = out->raw_state;
+        op->pending_beats = 1;
+    }
+
+    out->state = op->committed;
 }
 
 const char *echo_state_name(echo_state_t s)

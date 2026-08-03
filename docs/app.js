@@ -77,6 +77,7 @@ async function loadCore() {
     stage: m.cwrap('echo_wasm_stage_baseline', null, ['number', 'number']),
     vote: m.cwrap('echo_wasm_vote', 'number', ['number']),
     quality: m.cwrap('echo_wasm_quality', 'number', []),
+    rawState: m.cwrap('echo_wasm_raw_state', 'number', []),
     commit: m.cwrap('echo_wasm_commit_baseline', null, []),
   };
   echo.init(60000, ENROLL_MS);
@@ -330,6 +331,7 @@ function render({ state, conf, f }) {
     note: (el.note.value || '').replace(/[",\n]/g, ' ').trim(),
     env: environment(),
     quality: echo.quality().toFixed(3),
+    raw: STATES[echo.rawState()].toUpperCase(),
     state: STATES[state].toUpperCase(),
     conf: conf.toFixed(4),
     votes: [0, 1, 2].map((i) => echo.vote(i).toFixed(4)),
@@ -387,7 +389,7 @@ function drawTrace(state) {
 function exportCSV() {
   if (!sessionLog.length) return;
   const header = ['timestamp', 'elapsed_s', 'participant', 'note',
-                  'temp_f', 'humidity_pct', 'wbgt_f', 'setting', 'signal_quality', 'state',
+                  'temp_f', 'humidity_pct', 'wbgt_f', 'setting', 'signal_quality', 'state', 'raw_state',
                   'confidence', 'p_green', 'p_amber', 'p_red',
                   ...FEATURES, 'model'].join(',');
   const model = echo.modelId();

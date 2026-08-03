@@ -32,6 +32,10 @@ int   echo_wasm_enrolling(void)  { return g_res.enrolling; }
 int   echo_wasm_baselined(void)  { return ECHO_BASELINED; }
 int   echo_wasm_ready(void)      { return g_op.ready; }
 int   echo_wasm_state(void)      { return (int)g_res.state; }
+
+/* Classifier output before hysteresis. Logged for research; not displayed,
+ * because the whole point of hysteresis is not to show this. */
+int   echo_wasm_raw_state(void)  { return (int)g_res.raw_state; }
 float echo_wasm_confidence(void) { return g_res.confidence; }
 
 /* Fraction of the enrollment period completed, 0..1. */

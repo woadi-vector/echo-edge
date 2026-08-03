@@ -67,8 +67,20 @@ typedef struct {
  * enrollment period, then store it and reuse it forever.
  *
  * A model built with ECHO_BASELINED == 0 ignores all of this. */
+/* Beats a new state must hold before it is reported. A classifier sitting near
+ * a decision boundary crosses it on almost every beat, which produces a stream
+ * of transitions that describe the threshold rather than the operator. Roughly
+ * 10 beats is 8 seconds at 75 bpm — long enough to reject boundary chatter,
+ * short enough not to hide a real change. */
+#define ECHO_HYSTERESIS_BEATS 10
+
 typedef struct {
     echo_window_t win;
+    echo_state_t  committed;      /* state currently reported */
+    echo_state_t  pending;        /* candidate awaiting confirmation */
+    uint16_t      pending_beats;  /* beats the candidate has held */
+    uint16_t      hysteresis;     /* beats required; 0 disables */
+    int           has_state;      /* a state has been committed at least once */
     float    baseline[ECHO_N_FEATURES];
     float    accum[ECHO_N_FEATURES];
     uint32_t accum_n;
@@ -78,7 +90,8 @@ typedef struct {
 } echo_operator_t;
 
 typedef struct {
-    echo_state_t state;
+    echo_state_t state;                      /* reported state, after hysteresis */
+    echo_state_t raw_state;                  /* classifier output, before hysteresis */
     float        confidence;                 /* winning class vote share */
     float        votes[3];                   /* GREEN / AMBER / RED */
     float        features[ECHO_N_FEATURES];  /* raw, pre-scaling */
@@ -138,6 +151,10 @@ void echo_step(echo_window_t *w, float rr_ms, echo_result_t *out);
 /* enroll_ms is the quiet period used to establish the baseline. Around
  * 180000 (three minutes) matches how the shipped model was trained. */
 void echo_operator_init(echo_operator_t *op, float window_ms, float enroll_ms);
+
+/* Override the hysteresis requirement. 0 reports every classification
+ * immediately, which is what an offline analysis of recorded data wants. */
+void echo_operator_set_hysteresis(echo_operator_t *op, uint16_t beats);
 
 /* Restore a baseline saved from a previous session, skipping enrollment. */
 void echo_operator_set_baseline(echo_operator_t *op, const float *baseline);
