@@ -24,7 +24,7 @@ const el = {
   logged: $('logged'), export: $('export'), note: $('note'),
   savebase: $('savebase'), loadbase: $('loadbase'), basefile: $('basefile'),
   temp: $('temp'), rh: $('rh'), wbgt: $('wbgt'), setting: $('setting'),
-  quality: $('quality'),
+  quality: $('quality'), discard: $('discard'),
 };
 
 /* Environment is read at log time, not at session start, so a value entered
@@ -41,6 +41,65 @@ function environment() {
  * research needs the whole series. */
 let sessionLog = [];
 let sessionStart = null;
+let wakeLock = null;
+
+/* Mobile browsers evict background tabs under memory pressure. A glance at
+ * another app can therefore destroy an entire session, and the loss is silent
+ * — the page simply reloads empty. The log is mirrored to local storage as it
+ * grows so a reload recovers it. */
+const SESSION_PREFIX = 'echo.session.';
+const PERSIST_EVERY = 10;   // windows between writes
+
+function sessionKey() { return SESSION_PREFIX + participant(); }
+
+function persistSession() {
+  try { localStorage.setItem(sessionKey(), JSON.stringify(sessionLog)); }
+  catch { /* quota or private mode — the session simply is not recoverable */ }
+}
+
+function recoverSession() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(sessionKey()) || 'null'); }
+  catch { saved = null; }
+  if (!Array.isArray(saved) || !saved.length) return;
+
+  sessionLog = saved;
+  el.logged.textContent = sessionLog.length;
+  el.export.disabled = false;
+  el.discard.disabled = false;
+  if (sessionLog.length % PERSIST_EVERY === 0) persistSession();
+  el.detail.textContent =
+    `Recovered ${saved.length} rows from an interrupted session — export or ` +
+    `clear before starting a new one`;
+}
+
+function clearSession() {
+  sessionLog = [];
+  sessionStart = null;
+  try { localStorage.removeItem(sessionKey()); } catch { /* ignore */ }
+  el.logged.textContent = '0';
+  el.export.disabled = true;
+  el.discard.disabled = true;
+}
+
+/* Keep the screen awake while streaming. Screen-off is the most common route
+ * to tab eviction, and a dark screen also stops the operator noticing a
+ * dropped connection. */
+async function holdWakeLock() {
+  if (!('wakeLock' in navigator) || wakeLock) return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => { wakeLock = null; });
+  } catch { /* unsupported or denied — not fatal */ }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    if (el.status.textContent === 'streaming') holdWakeLock();
+  } else {
+    persistSession();   // last chance before the tab may be discarded
+  }
+});
 
 function participant() {
   const v = (el.pid.value || '').trim().toUpperCase();
@@ -86,9 +145,11 @@ async function loadCore() {
   if (!echo.baselined()) {
     el.basestat.textContent = 'not required';
     el.forget.disabled = true;
+    recoverSession();
     return true;
   }
   restoreBaseline();
+  recoverSession();
   return true;
 }
 
@@ -238,6 +299,7 @@ async function connect() {
     el.status.textContent = 'streaming';
     el.connect.classList.add('armed');
     el.detail.textContent = 'Filling the 60-second window';
+    holdWakeLock();
   } catch (err) {
     el.status.textContent = 'standby';
     if (err && err.name !== 'NotFoundError') fail(err.message);
@@ -339,6 +401,8 @@ function render({ state, conf, f }) {
   });
   el.logged.textContent = sessionLog.length;
   el.export.disabled = false;
+  el.discard.disabled = false;
+  if (sessionLog.length % PERSIST_EVERY === 0) persistSession();
 
   history.push(f.mean_hr);
   if (history.length > 220) history.shift();
@@ -413,11 +477,15 @@ function exportCSV() {
   link.download = `echo_${participant()}_${stamp}.csv`;
   link.click();
   URL.revokeObjectURL(link.href);
+
+  // Exported rows are safe on disk; the recovery copy has done its job.
+  try { localStorage.removeItem(sessionKey()); } catch { /* ignore */ }
 }
 
 function switchParticipant() {
   // A new code is a new person: drop the session and re-enroll.
   stopSim();
+  persistSession();     // keep the outgoing participant's rows recoverable
   sessionLog = [];
   sessionStart = null;
   beatCount = 0;
@@ -448,6 +516,12 @@ el.connect.addEventListener('click', connect);
 el.sim.addEventListener('click', startSim);
 el.forget.addEventListener('click', forgetBaseline);
 el.export.addEventListener('click', exportCSV);
+el.discard.addEventListener('click', () => {
+  if (sessionLog.length &&
+      !confirm(`Discard ${sessionLog.length} unexported rows?`)) return;
+  clearSession();
+  el.detail.textContent = 'Session cleared';
+});
 el.pid.addEventListener('change', switchParticipant);
 el.savebase.addEventListener('click', downloadBaseline);
 el.loadbase.addEventListener('click', () => el.basefile.click());
