@@ -421,17 +421,19 @@ function firePrompt() {
 }
 
 function dismissPrompt(fromMark) {
-  if (el.prompt.hidden) return;
+  const wasOpen = !el.prompt.hidden;
   el.prompt.hidden = true;
   clearTimeout(promptTimeout);
-  if (fromMark) queuePrompt();
+  promptTimeout = null;
+  if (wasOpen && fromMark) queuePrompt();
 }
 
 function startSampling() {
   samplingOn = true;
   el.sampling.textContent = 'Stop random prompts';
   el.sampling.classList.add('armed');
-  queuePrompt();
+  clearTimeout(promptTimer);
+  promptTimer = setTimeout(firePrompt, 30000);
 }
 
 function stopSampling() {

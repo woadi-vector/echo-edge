@@ -108,6 +108,14 @@ button.armed{border-color:var(--green);color:var(--green)}
   border-color:var(--ground);color:var(--ground);
 }
 .pskip{align-self:flex-start;opacity:.65;font-size:11px;padding:5px 11px}
+.prompt[hidden]{display:none}
+.enroll[hidden]{display:none}
+
+/* Taps need to be visibly acknowledged; on a phone there is no hover state
+   to confirm the press landed. */
+.marktags button:active,.ptags button:active,.pskip:active{
+  background:var(--ink);color:var(--ground);
+}
 
 input.code{
   font:inherit;font-family:'JetBrains Mono',monospace;font-size:15px;
