@@ -24,7 +24,7 @@ body{
 h1,h2,.disp{font-family:'Barlow Condensed',sans-serif;font-weight:600;letter-spacing:.06em;text-transform:uppercase}
 
 /* ---- left rail ---- */
-.rail{border-right:1px solid var(--rule);padding:20px;display:flex;flex-direction:column;gap:22px}
+.rail{border-right:1px solid var(--rule);padding:20px 20px 190px;display:flex;flex-direction:column;gap:22px}
 .mark{display:flex;align-items:baseline;gap:8px}
 .mark h1{font-size:26px;margin:0;letter-spacing:.1em}
 .mark span{color:var(--dim);font-size:10px;letter-spacing:.18em}
@@ -60,6 +60,55 @@ button.armed{border-color:var(--green);color:var(--green)}
   font-family:'Barlow Condensed',sans-serif;margin-top:4px}
 .trace{width:100%;height:56px;display:block;margin-top:14px}
 
+.modes{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}
+.modes .mode{padding:9px 4px;font-size:12px;letter-spacing:.08em}
+.modes .mode.on{border-color:var(--ink);color:var(--ink)}
+.modes .mode:not(.on){color:var(--dim)}
+
+/* Sticky mark bar. On set the phone is glanced at, not read, so the action
+   that matters has to be reachable with one thumb without scrolling. */
+.markbar{
+  position:fixed;left:0;right:0;bottom:0;z-index:50;
+  background:var(--panel);border-top:1px solid var(--rule);
+  padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));
+  display:flex;flex-direction:column;gap:6px;
+}
+.marktags{display:flex;gap:5px;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.marktags button{
+  flex:0 0 auto;width:auto;padding:8px 12px;font-size:12px;letter-spacing:.06em;
+}
+.markrow{display:flex;gap:6px}
+.markinput{
+  flex:1 1 auto;min-width:0;font:inherit;font-family:'JetBrains Mono',monospace;
+  font-size:14px;padding:11px 12px;background:var(--ground);color:var(--ink);
+  border:1px solid var(--rule);border-radius:0;
+}
+.markinput:focus{outline:none;border-color:var(--amber)}
+.markbtn{
+  flex:0 0 108px;width:auto;font-size:17px;padding:11px 0;
+  border-color:var(--amber);color:var(--amber);
+}
+.markbtn:active{background:var(--amber);color:var(--ground)}
+.marklast{color:var(--dim);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+  font-family:'Barlow Condensed',sans-serif;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+
+/* Random context prompt. */
+.prompt{
+  position:fixed;left:0;right:0;top:0;z-index:60;
+  background:var(--amber);color:var(--ground);
+  padding:calc(10px + env(safe-area-inset-top,0px)) 12px 10px;
+  display:flex;flex-direction:column;gap:7px;
+}
+.ptext{font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:17px;
+  letter-spacing:.06em;text-transform:uppercase}
+.ptags{display:flex;gap:5px;flex-wrap:wrap}
+.ptags button,.pskip{
+  width:auto;padding:8px 13px;font-size:13px;
+  border-color:var(--ground);color:var(--ground);
+}
+.pskip{align-self:flex-start;opacity:.65;font-size:11px;padding:5px 11px}
+
 input.code{
   font:inherit;font-family:'JetBrains Mono',monospace;font-size:15px;
   width:100%;padding:9px 12px;letter-spacing:.12em;text-transform:uppercase;
@@ -91,7 +140,7 @@ input.code::placeholder{color:var(--dim);letter-spacing:.12em}
 @media (prefers-reduced-motion:reduce){.bar span{transition:none}}
 
 /* ---- strip stack: the board ---- */
-.stack{flex:1;overflow-y:auto;padding:14px 28px 40px}
+.stack{flex:1;overflow-y:auto;padding:14px 28px 190px}
 .strip{
   display:grid;grid-template-columns:64px repeat(5,1fr) 92px;
   align-items:center;gap:0;
@@ -133,6 +182,28 @@ input.code::placeholder{color:var(--dim);letter-spacing:.12em}
     <input id="pid" class="code" maxlength="12" placeholder="P01"
            autocomplete="off" spellcheck="false">
     <div class="hint">A code, not a name. Each code keeps its own baseline.</div>
+  </div>
+
+  <div>
+    <div class="lbl">Activity</div>
+    <div class="modes">
+      <button class="mode on" data-mode="rest">Rest</button>
+      <button class="mode" data-mode="active">Active</button>
+      <button class="mode" data-mode="recovery">Recovery</button>
+    </div>
+    <div class="hint">Set before starting and whenever it changes. While Active
+      the state is withheld: the model was trained on seated subjects and
+      saturates under exertion.</div>
+  </div>
+
+  <div>
+    <div class="lbl">Context sampling</div>
+    <div class="btns">
+      <button id="sampling">Start random prompts</button>
+    </div>
+    <div class="hint">Prompts every 10 to 15 minutes at random. Marking only
+      when something spikes gives no record of what ordinary looked like, so
+      the spikes cannot be interpreted.</div>
   </div>
 
   <div>
@@ -220,6 +291,22 @@ input.code::placeholder{color:var(--dim);letter-spacing:.12em}
     <div class="empty">No classifications yet. Connect a strap, or run the simulated feed to see the board work.</div>
   </section>
 </main>
+
+<div class="prompt" id="prompt" hidden>
+  <div class="ptext">What is happening right now?</div>
+  <div class="ptags" id="ptags"></div>
+  <button class="pskip" id="pskip">Skip</button>
+</div>
+
+<div class="markbar">
+  <div class="marktags" id="marktags"></div>
+  <div class="markrow">
+    <input id="marklabel" class="markinput" maxlength="40"
+           placeholder="label (optional)" autocomplete="off">
+    <button id="mark" class="markbtn">Mark</button>
+  </div>
+  <div class="marklast" id="marklast">No marks yet</div>
+</div>
 
 <script src="echo.js"></script>
 <script src="app.js"></script>

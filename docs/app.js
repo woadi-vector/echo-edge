@@ -15,6 +15,16 @@ const BASELINE_KEY = 'echo.baseline';  // suffixed per participant code
 const DEFAULT_PID = 'P01';
 const FEATURES = ['mean_rr', 'mean_hr', 'sdnn', 'rmssd', 'pnn50', 'rr_slope', 'hr_cv', 'coverage'];
 
+/* Quick-mark labels. Edit for a different setting. */
+const MARK_TAGS = ['waiting', 'moving', 'take', 'talking', 'stress', 'food'];
+
+/* Random context sampling. Marking only when something spikes yields a record
+   of flagged moments with nothing to compare them against, which leaves the
+   flagged moments uninterpretable. Random prompts supply the base rate. */
+const PROMPT_MIN_MS = 600000;
+const PROMPT_MAX_MS = 900000;
+const PROMPT_TIMEOUT_MS = 90000;
+
 const $ = (id) => document.getElementById(id);
 const el = {
   connect: $('connect'), sim: $('sim'), status: $('status'), device: $('device'),
@@ -25,6 +35,9 @@ const el = {
   savebase: $('savebase'), loadbase: $('loadbase'), basefile: $('basefile'),
   temp: $('temp'), rh: $('rh'), wbgt: $('wbgt'), setting: $('setting'),
   quality: $('quality'), discard: $('discard'),
+  mark: $('mark'), marklabel: $('marklabel'), marktags: $('marktags'),
+  marklast: $('marklast'), prompt: $('prompt'), ptags: $('ptags'),
+  pskip: $('pskip'), sampling: $('sampling'),
 };
 
 /* Environment is read at log time, not at session start, so a value entered
@@ -42,6 +55,12 @@ function environment() {
 let sessionLog = [];
 let sessionStart = null;
 let wakeLock = null;
+let mode = 'rest';
+let pendingMark = null;
+let markCount = 0;
+let promptTimer = null;
+let promptTimeout = null;
+let samplingOn = false;
 
 /* Mobile browsers evict background tabs under memory pressure. A glance at
  * another app can therefore destroy an entire session, and the loss is silent
@@ -64,6 +83,7 @@ function recoverSession() {
   if (!Array.isArray(saved) || !saved.length) return;
 
   sessionLog = saved;
+  pendingMark = null;
   el.logged.textContent = sessionLog.length;
   el.export.disabled = false;
   el.discard.disabled = false;
@@ -334,6 +354,109 @@ function stopSim() {
 
 /* ---------- inference + render ---------- */
 
+/* ---------- activity mode ----------
+ * The model was trained on seated adults under mental stress. Under exertion
+ * its input is out of distribution and the state saturates, so a strap worn
+ * through a long active stretch reads RED throughout. That is the signal
+ * running out of range, not a finding. While Active the light is withheld and
+ * the raw physiology shown instead. Everything is still logged. */
+
+function setMode(next) {
+  mode = next;
+  document.querySelectorAll('.mode').forEach((b) =>
+    b.classList.toggle('on', b.dataset.mode === next));
+  lastState = -1;
+  if (next === 'active') {
+    el.state.dataset.s = '-';
+    el.state.textContent = 'Active';
+  }
+  markEvent('mode:' + next, true);
+}
+
+/* ---------- marks ----------
+ * A mark stamps the moment. The label can be vague or missing and still be
+ * useful; the timestamp is the part that cannot be reconstructed afterwards.
+ * It attaches to the next logged window, under a second away at rest. */
+
+function markEvent(label, quiet) {
+  const clean = String(label || 'mark')
+    .replace(/[",\n]/g, ' ').trim().slice(0, 40) || 'mark';
+  pendingMark = clean;
+  markCount++;
+  const now = new Date().toLocaleTimeString([], { hour12: false });
+  el.marklast.textContent = markCount + ' marks \u00b7 last "' + clean + '" at ' + now;
+  if (!quiet && navigator.vibrate) navigator.vibrate(35);
+  dismissPrompt(true);
+}
+
+function markFromInput() {
+  markEvent(el.marklabel.value);
+  el.marklabel.value = '';
+  el.marklabel.blur();
+}
+
+/* ---------- random context prompts ---------- */
+
+function nextPromptDelay() {
+  return PROMPT_MIN_MS + Math.floor(Math.random() * (PROMPT_MAX_MS - PROMPT_MIN_MS));
+}
+
+function queuePrompt() {
+  clearTimeout(promptTimer);
+  if (!samplingOn) return;
+  promptTimer = setTimeout(firePrompt, nextPromptDelay());
+}
+
+function firePrompt() {
+  el.prompt.hidden = false;
+  if (navigator.vibrate) navigator.vibrate([120, 80, 120]);
+  clearTimeout(promptTimeout);
+  // An ignored prompt is still data: it records that the schedule fired and
+  // went unanswered, which keeps the sampling density honest.
+  promptTimeout = setTimeout(() => {
+    markEvent('prompt:missed', true);
+    el.prompt.hidden = true;
+    queuePrompt();
+  }, PROMPT_TIMEOUT_MS);
+}
+
+function dismissPrompt(fromMark) {
+  if (el.prompt.hidden) return;
+  el.prompt.hidden = true;
+  clearTimeout(promptTimeout);
+  if (fromMark) queuePrompt();
+}
+
+function startSampling() {
+  samplingOn = true;
+  el.sampling.textContent = 'Stop random prompts';
+  el.sampling.classList.add('armed');
+  queuePrompt();
+}
+
+function stopSampling() {
+  samplingOn = false;
+  clearTimeout(promptTimer);
+  clearTimeout(promptTimeout);
+  el.prompt.hidden = true;
+  el.sampling.textContent = 'Start random prompts';
+  el.sampling.classList.remove('armed');
+}
+
+function buildTagButtons() {
+  MARK_TAGS.forEach((tag) => {
+    const a = document.createElement('button');
+    a.textContent = tag;
+    a.addEventListener('click', () => markEvent(tag));
+    el.marktags.appendChild(a);
+
+    const b = document.createElement('button');
+    b.textContent = tag;
+    b.addEventListener('click', () => markEvent('prompt:' + tag));
+    el.ptags.appendChild(b);
+  });
+}
+
 let enrolledOnce = false;
 
 function ingest(rrMs) {
@@ -378,11 +501,19 @@ function showEnrolling(p) {
 let lastState = -1;
 
 function render({ state, conf, f }) {
-  el.state.dataset.s = String(state);
-  el.state.textContent = STATES[state];
-  el.detail.textContent =
-    `${f.mean_hr.toFixed(0)} bpm · rmssd ${f.rmssd.toFixed(0)} ms · ` +
-    `confidence ${(conf * 100).toFixed(0)}%`;
+  if (mode === 'active') {
+    el.state.dataset.s = '-';
+    el.state.textContent = 'Active';
+    el.detail.textContent =
+      `${f.mean_hr.toFixed(0)} bpm · rmssd ${f.rmssd.toFixed(0)} ms · ` +
+      `state withheld during exertion`;
+  } else {
+    el.state.dataset.s = String(state);
+    el.state.textContent = STATES[state];
+    el.detail.textContent =
+      `${f.mean_hr.toFixed(0)} bpm · rmssd ${f.rmssd.toFixed(0)} ms · ` +
+      `confidence ${(conf * 100).toFixed(0)}%`;
+  }
 
   // Log every window, regardless of whether it changes the displayed state.
   if (sessionStart === null) sessionStart = Date.now();
@@ -391,6 +522,8 @@ function render({ state, conf, f }) {
     elapsed: ((Date.now() - sessionStart) / 1000).toFixed(1),
     pid: participant(),
     note: (el.note.value || '').replace(/[",\n]/g, ' ').trim(),
+    mode: mode,
+    mark: pendingMark || '',
     env: environment(),
     quality: echo.quality().toFixed(3),
     raw: STATES[echo.rawState()].toUpperCase(),
@@ -399,6 +532,7 @@ function render({ state, conf, f }) {
     votes: [0, 1, 2].map((i) => echo.vote(i).toFixed(4)),
     f: FEATURES.map((n) => f[n].toFixed(4)),
   });
+  pendingMark = null;
   el.logged.textContent = sessionLog.length;
   el.export.disabled = false;
   el.discard.disabled = false;
@@ -409,7 +543,7 @@ function render({ state, conf, f }) {
   drawTrace(state);
 
   // One strip per state transition. A strip per beat would be noise.
-  if (state !== lastState) {
+  if (mode !== 'active' && state !== lastState) {
     lastState = state;
     addStrip(state, conf, f);
   }
@@ -453,12 +587,14 @@ function drawTrace(state) {
 function exportCSV() {
   if (!sessionLog.length) return;
   const header = ['timestamp', 'elapsed_s', 'participant', 'note',
+                  'activity', 'mark',
                   'temp_f', 'humidity_pct', 'wbgt_f', 'setting', 'signal_quality', 'state', 'raw_state',
                   'confidence', 'p_green', 'p_amber', 'p_red',
                   ...FEATURES, 'model'].join(',');
   const model = echo.modelId();
   const rows = sessionLog.map((r) =>
-    [r.t, r.elapsed, r.pid, r.note, ...r.env, r.quality, r.state, r.raw, r.conf,
+    [r.t, r.elapsed, r.pid, r.note, r.mode || '', r.mark || '',
+     ...r.env, r.quality, r.state, r.raw, r.conf,
      ...r.votes, ...r.f, model].join(','));
 
   // Header and rows are built separately, so they can silently drift apart —
@@ -511,6 +647,21 @@ function fail(msg) {
 }
 
 /* ---------- boot ---------- */
+
+document.querySelectorAll('.mode').forEach((b) =>
+  b.addEventListener('click', () => setMode(b.dataset.mode)));
+
+el.mark.addEventListener('click', markFromInput);
+el.marklabel.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') markFromInput();
+});
+el.sampling.addEventListener('click', () =>
+  (samplingOn ? stopSampling() : startSampling()));
+el.pskip.addEventListener('click', () => {
+  markEvent('prompt:skipped', true);
+  dismissPrompt(true);
+});
+buildTagButtons();
 
 el.connect.addEventListener('click', connect);
 el.sim.addEventListener('click', startSim);
