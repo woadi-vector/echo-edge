@@ -38,6 +38,9 @@ int   echo_wasm_state(void)      { return (int)g_res.state; }
 int   echo_wasm_raw_state(void)  { return (int)g_res.raw_state; }
 float echo_wasm_confidence(void) { return g_res.confidence; }
 
+/* Continuous 0-100 readiness. Meaningful only while echo_wasm_valid() is 1. */
+float echo_wasm_readiness(void)  { return g_res.readiness; }
+
 /* Fraction of the enrollment period completed, 0..1. */
 float echo_wasm_enroll_progress(void)
 {

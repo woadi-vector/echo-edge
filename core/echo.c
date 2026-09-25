@@ -139,6 +139,12 @@ void echo_classify(const float *features, echo_result_t *out)
 
     for (int c = 0; c < 3; c++) out->votes[c] = acc[c] / (float)ECHO_N_TREES;
 
+    /* Continuous readiness from the class vote shares. Deterministic, so the
+     * study analyzer's preview and every deployment target report one number. */
+    out->readiness = 100.0f * (ECHO_W_GREEN * out->votes[0]
+                             + ECHO_W_AMBER * out->votes[1]
+                             + ECHO_W_RED   * out->votes[2]);
+
 #if ECHO_AMBER_BAND
     /* The corpus had no AMBER to learn, so the middle state is derived from
      * the model's own uncertainty: confidently calm, confidently loaded, or
@@ -211,6 +217,7 @@ void echo_step(echo_window_t *w, float rr_ms, echo_result_t *out)
         out->valid = 0;
         out->state = ECHO_GREEN;
         out->confidence = 0.0f;
+        out->readiness = 0.0f;
         return;
     }
     echo_classify(out->features, out);

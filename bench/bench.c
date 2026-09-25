@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <math.h>
 
 #define NFIX ((int)(sizeof(ECHO_FIXTURES) / sizeof(ECHO_FIXTURES[0])))
 
@@ -25,9 +26,16 @@ static double now_ns(void)
     return (double)ts.tv_sec * 1e9 + (double)ts.tv_nsec;
 }
 
+/* Readiness is continuous, so it is checked within a tolerance rather than for
+ * bit-equality: float accumulation and -ffast-math perturb the last digits. On
+ * a 0-100 scale this bound is far tighter than any physiologically meaningful
+ * difference. */
+#define ECHO_READINESS_TOL 0.05f
+
 static int parity(void)
 {
-    int fail = 0;
+    int fail = 0, rfail = 0;
+    float max_err = 0.0f;
     echo_result_t r;
     for (int i = 0; i < NFIX; i++) {
         echo_classify(ECHO_FIXTURES[i].f, &r);
@@ -37,9 +45,19 @@ static int parity(void)
                         i, echo_state_name(r.state), ECHO_FIXTURES[i].expect);
             fail++;
         }
+        const float err = fabsf(r.readiness - ECHO_FIXTURES[i].readiness);
+        if (err > max_err) max_err = err;
+        if (err > ECHO_READINESS_TOL) {
+            if (rfail < 5)
+                fprintf(stderr, "  readiness miss @%d: C=%.3f expected=%.3f\n",
+                        i, r.readiness, ECHO_FIXTURES[i].readiness);
+            rfail++;
+        }
     }
     printf("parity: %d/%d fixtures match sklearn\n", NFIX - fail, NFIX);
-    return fail;
+    printf("readiness parity: %d/%d within %.2f (max abs err %.4f)\n",
+           NFIX - rfail, NFIX, ECHO_READINESS_TOL, max_err);
+    return fail + rfail;
 }
 
 int main(int argc, char **argv)

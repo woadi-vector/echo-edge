@@ -10,6 +10,15 @@
 #define ECHO_N_FEATURES 8
 #define ECHO_MAX_BEATS  512
 
+/* Continuous readiness weights. readiness = 100 * (Wg*p_green + Wa*p_amber +
+ * Wr*p_red), a 0-100 scalar where RED pulls toward 0 and GREEN toward 100, with
+ * the uncertain AMBER band contributing half. It is a deterministic function of
+ * the class vote shares — the same number study/analyze.py previews from the
+ * logged p_green/p_amber/p_red — now emitted natively so every target agrees. */
+#define ECHO_W_GREEN 1.0f
+#define ECHO_W_AMBER 0.5f
+#define ECHO_W_RED   0.0f
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -94,6 +103,7 @@ typedef struct {
     echo_state_t raw_state;                  /* classifier output, before hysteresis */
     float        confidence;                 /* winning class vote share */
     float        votes[3];                   /* GREEN / AMBER / RED */
+    float        readiness;                  /* 0-100 continuous readiness; valid only when `valid` */
     float        features[ECHO_N_FEATURES];  /* raw, pre-scaling */
     float        relative[ECHO_N_FEATURES];  /* deviation from the operator's baseline */
     float        quality;                    /* accepted / pushed, 0..1 */
