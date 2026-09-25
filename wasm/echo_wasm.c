@@ -4,14 +4,17 @@
  * Mirrors the operator API: enrollment first, classification after. */
 #include "echo.h"
 #include "echo_model.h"
+#include "echo_trend.h"
 
 static echo_operator_t g_op;
 static echo_result_t   g_res;
+static echo_trend_t    g_trend;
 static float           g_pending[ECHO_N_FEATURES];
 
 void echo_wasm_init(float window_ms, float enroll_ms)
 {
     echo_operator_init(&g_op, window_ms, enroll_ms);
+    echo_trend_init(&g_trend);
     g_res.valid = 0;
     g_res.enrolling = 0;
 }
@@ -20,6 +23,10 @@ void echo_wasm_init(float window_ms, float enroll_ms)
 int echo_wasm_push(float rr_ms)
 {
     echo_operator_step(&g_op, rr_ms, &g_res);
+    /* Feed the trend engine only once a real readiness exists (post-enrollment),
+     * advancing its clock by the interval just consumed. */
+    if (g_res.valid)
+        echo_trend_push(&g_trend, g_res.readiness, rr_ms);
     return g_res.valid;
 }
 
@@ -40,6 +47,9 @@ float echo_wasm_confidence(void) { return g_res.confidence; }
 
 /* Continuous 0-100 readiness. Meaningful only while echo_wasm_valid() is 1. */
 float echo_wasm_readiness(void)  { return g_res.readiness; }
+
+/* Graded readiness-trend warning: 0 NONE, 1 WATCH, 2 ELEVATED, 3 HIGH. */
+int   echo_wasm_trend_level(void) { return (int)g_trend.level; }
 
 /* Fraction of the enrollment period completed, 0..1. */
 float echo_wasm_enroll_progress(void)

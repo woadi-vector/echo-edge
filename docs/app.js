@@ -10,6 +10,7 @@
 const HR_SERVICE = 'heart_rate';
 const HR_CHAR = 'heart_rate_measurement';
 const STATES = ['Green', 'Amber', 'Red'];
+const TREND_LEVELS = ['NONE', 'WATCH', 'ELEVATED', 'HIGH'];  // echo_wasm_trend_level order
 const ENROLL_MS = 180000;              // three minutes of quiet
 const BASELINE_KEY = 'echo.baseline';  // suffixed per participant code
 const DEFAULT_PID = 'P01';
@@ -146,6 +147,8 @@ async function loadCore() {
     push: m.cwrap('echo_wasm_push', 'number', ['number']),
     state: m.cwrap('echo_wasm_state', 'number', []),
     conf: m.cwrap('echo_wasm_confidence', 'number', []),
+    readiness: m.cwrap('echo_wasm_readiness', 'number', []),
+    trend: m.cwrap('echo_wasm_trend_level', 'number', []),
     feat: m.cwrap('echo_wasm_feature', 'number', ['number']),
     modelId: m.cwrap('echo_wasm_model_id', 'string', []),
     enrolling: m.cwrap('echo_wasm_enrolling', 'number', []),
@@ -512,9 +515,11 @@ function render({ state, conf, f }) {
   } else {
     el.state.dataset.s = String(state);
     el.state.textContent = STATES[state];
+    const tl = TREND_LEVELS[echo.trend()] || 'NONE';
     el.detail.textContent =
       `${f.mean_hr.toFixed(0)} bpm · rmssd ${f.rmssd.toFixed(0)} ms · ` +
-      `confidence ${(conf * 100).toFixed(0)}%`;
+      `readiness ${echo.readiness().toFixed(0)} · confidence ${(conf * 100).toFixed(0)}%` +
+      (tl !== 'NONE' ? ` · trend ${tl}` : '');
   }
 
   // Log every window, regardless of whether it changes the displayed state.
@@ -531,6 +536,8 @@ function render({ state, conf, f }) {
     raw: STATES[echo.rawState()].toUpperCase(),
     state: STATES[state].toUpperCase(),
     conf: conf.toFixed(4),
+    readiness: echo.readiness().toFixed(2),
+    trend: TREND_LEVELS[echo.trend()] || 'NONE',
     votes: [0, 1, 2].map((i) => echo.vote(i).toFixed(4)),
     f: FEATURES.map((n) => f[n].toFixed(4)),
   });
@@ -591,12 +598,12 @@ function exportCSV() {
   const header = ['timestamp', 'elapsed_s', 'participant', 'note',
                   'activity', 'mark',
                   'temp_f', 'humidity_pct', 'wbgt_f', 'setting', 'signal_quality', 'state', 'raw_state',
-                  'confidence', 'p_green', 'p_amber', 'p_red',
+                  'confidence', 'readiness', 'trend', 'p_green', 'p_amber', 'p_red',
                   ...FEATURES, 'model'].join(',');
   const model = echo.modelId();
   const rows = sessionLog.map((r) =>
     [r.t, r.elapsed, r.pid, r.note, r.mode || '', r.mark || '',
-     ...r.env, r.quality, r.state, r.raw, r.conf,
+     ...r.env, r.quality, r.state, r.raw, r.conf, r.readiness, r.trend,
      ...r.votes, ...r.f, model].join(','));
 
   // Header and rows are built separately, so they can silently drift apart —
