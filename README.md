@@ -165,6 +165,24 @@ threshold rather than the operator. A new state must hold for 10 consecutive
 beats before it is reported — about 8 seconds at 75 bpm. On a boundary-hovering
 test signal this cut reported transitions from 19 to 2.
 
+**Readiness.** Alongside the discrete state, the core emits a continuous 0–100
+*readiness* scalar: `100 · (p_green + ½·p_amber)`, a smooth reduction of the same
+class vote shares the model already produces. It is not new information — it is
+the state made trendable, so a drift is visible before it crosses a boundary.
+Being a deterministic function of the votes, it is identical on every target and
+is checked against scikit-learn in the parity harness (`readiness parity: N/N`).
+The browser logs it as a `readiness` column.
+
+**Trend.** A separate, allocation-free engine (`core/echo_trend.{h,c}`) watches
+the readiness *trajectory* rather than its level. It grades a warning — WATCH,
+ELEVATED, or HIGH — from the fall in readiness over a short (2 min) and long
+(5 min) window combined with absolute floors: the same rate-plus-threshold recipe
+clinical early-warning scores use. The slope catches a decline before the state
+flips; the floors catch a low level regardless of slope. Windows and thresholds
+are compile-time constants in `core/echo_trend.h` — the defaults are reasonable
+but **unvalidated against graded load**, and should be calibrated on real session
+data. The browser logs the level as a `trend` column.
+
 ---
 
 ## Setup
@@ -237,16 +255,18 @@ python3 train/train.py --dataset wesad --root /path/to/WESAD \
 
 ```
 core/     echo.h, echo.c        portable inference core
+          echo_trend.h, echo_trend.c   readiness-trend / graded warnings
           echo_model.h          GENERATED — packed forest + scaler constants
 train/    features.py           reference extractor, twin of echo.c
           train.py              fit, export C, emit parity fixtures
 data/     harmonize.py          dataset adapters to one feature contract
           baseline.py           per-operator enrollment
           ecg.py                R-peak detection for ECG-only corpora
-bench/    bench.c               latency, throughput, parity
+          schumann_check.py     R-peak detector validation vs published values
+bench/    bench.c               latency, throughput, parity (state + readiness)
 wasm/     echo_wasm.c           flat scalar surface for JS
 docs/     index.html, app.js    Web Bluetooth client (GitHub Pages)
-PROTOCOL.md                     operator protocol for data collection
+study/    analyze.py            session-log analysis: readiness, trend, AUC
 ```
 
 ---
