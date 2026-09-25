@@ -2,3 +2,7 @@ bench-baseline
 bench-optimized
 __pycache__/
 *.pyc
+
+# participant sessions + generated outputs ? never commit
+echo_*.csv
+study/windows.csv
