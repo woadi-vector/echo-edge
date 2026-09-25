@@ -6,3 +6,7 @@ __pycache__/
 # participant sessions + generated outputs ? never commit
 echo_*.csv
 study/windows.csv
+
+# participant sessions + generated outputs ? never commit
+echo_*.csv
+study/windows.csv
