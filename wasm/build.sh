@@ -13,9 +13,18 @@ fi
 
 [ -f core/echo_model.h ] || python3 train/train.py
 
+# -O2, and deliberately no -ffast-math or -msimd128.
+#
+# This binary is a measurement instrument before it is a demo. Fast math lets
+# the compiler reassociate floating point, so a result can depend on the
+# optimization level, and the parity check against the Python reference builds
+# at -O0, which would make the flags shipped to participants the only ones
+# never verified. The speed being traded away cannot be observed: feature
+# extraction runs in roughly 219 ns against beats arriving every 800 ms.
+# Reproducibility is worth more than a factor nobody can measure.
 emcc core/echo.c core/echo_trend.c wasm/echo_wasm.c \
   -Icore \
-  -O3 -ffast-math -msimd128 \
+  -O2 \
   -s WASM=1 \
   -s MODULARIZE=1 \
   -s EXPORT_NAME=EchoModule \

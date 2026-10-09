@@ -65,6 +65,15 @@ button.armed{border-color:var(--green);color:var(--green)}
 .modes .mode.on{border-color:var(--ink);color:var(--ink)}
 .modes .mode:not(.on){color:var(--dim)}
 
+/* Protocol phase. Deliberately not .mode: setMode() selects '.mode' across
+   the whole document, so a phase button carrying that class would be
+   switched off by an activity change and would fire setMode(undefined)
+   when clicked. */
+.phases{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}
+.phases .pbtn{padding:9px 4px;font-size:12px;letter-spacing:.06em}
+.phases .pbtn.on{border-color:var(--ink);color:var(--ink)}
+.phases .pbtn:not(.on){color:var(--dim)}
+
 /* Sticky mark bar. On set the phone is glanced at, not read, so the action
    that matters has to be reachable with one thumb without scrolling. */
 .markbar{
@@ -193,6 +202,21 @@ input.code::placeholder{color:var(--dim);letter-spacing:.12em}
   </div>
 
   <div>
+    <div class="lbl">Visit</div>
+    <input id="visit" class="code" type="number" min="1" max="24" step="1"
+           placeholder="1" autocomplete="off">
+    <div class="hint">Which scheduled visit this is. Entered, not inferred from
+      the date, so a rescheduled session is still numbered correctly.</div>
+  </div>
+
+  <div>
+    <div class="lbl">Protocol phase</div>
+    <div class="phases" id="phasebtns"></div>
+    <div class="hint">Stamped on every exported row. Set it as each phase
+      begins. Bruce and recovery also set Activity for you.</div>
+  </div>
+
+  <div>
     <div class="lbl">Activity</div>
     <div class="modes">
       <button class="mode on" data-mode="rest">Rest</button>
@@ -270,8 +294,10 @@ input.code::placeholder{color:var(--dim);letter-spacing:.12em}
     <div class="kv"><span>Inference</span><span id="where">wasm / on-device</span></div>
     <div class="kv"><span>Model</span><span id="model">—</span></div>
     <div class="kv"><span>Baseline</span><span id="basestat">—</span></div>
-    <div class="kv"><span>Logged</span><span id="logged">0</span></div>
-    <button id="export" style="margin-top:10px" disabled>Export CSV</button>
+    <div class="kv"><span>Windows</span><span id="logged">0</span></div>
+    <div class="kv"><span>Intervals</span><span id="beats_logged">0</span></div>
+    <button id="exportbeats" style="margin-top:10px" disabled>Export beats CSV</button>
+    <button id="export" style="margin-top:6px" disabled>Export windows CSV</button>
     <button id="discard" style="margin-top:6px" disabled>Discard session</button>
   </div>
 

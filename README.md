@@ -18,6 +18,103 @@ Web Bluetooth is not available in Safari)
 
 ---
 
+## Correction notice, 9 October 2026
+
+**Every accuracy figure below this notice was measured with a defective feature
+extractor.** Four defects were found and fixed on 9 October 2026. The
+repository as submitted to the Arm AI Optimization Challenge is preserved at
+the tag `arm-submission`, so the figures below remain reproducible from that
+commit. They are not reproducible from `main`, and they are not the figures the
+current code produces.
+
+What was wrong:
+
+1. **Permanent rejection lockout.** The beat filter rejects an interval
+   differing from the last accepted one by more than 25 percent, and it held
+   its reference point through a run of rejections. A sustained change above
+   the threshold therefore rejected every subsequent beat until the session
+   restarted. A simulated supine-to-standing transition kept 60 of 120 beats
+   and then froze.
+2. **Successive differences taken across rejected beats.** RMSSD and pNN50
+   differenced intervals that were not adjacent in time, and divided by `n - 1`
+   rather than by the number of differences actually taken.
+3. **A three-way divergence** between `core/echo.c`, `train/features.py` and
+   the model trained on the latter. The Python twin implemented neither the
+   relative jump filter nor window eviction, so the model was fit to numbers
+   the device never computed.
+4. **Catastrophic cancellation in float32.** SDNN and the RR slope used the
+   uncentred identities, costing up to 0.4 percent of SDNN at low variability.
+   Both are now two-pass and centred.
+
+A cross-language equivalence check now runs in CI on every push, because no
+development machine in use has a C toolchain and the check this repository
+documented was never actually executed.
+
+### What the corrected extractor measures
+
+Subject-wise 5-fold cross-validation on WESAD, 2391 windows from 15 subjects:
+
+| trees × depth | footprint | held-out accuracy | as submitted |
+|---|---|---|---|
+| 100 × 15 | 435 KB | 0.832 ± 0.051 | 0.903 ± 0.035 |
+| 25 × 15 | 126 KB | 0.823 ± 0.052 | not measured |
+| 25 × 10 | 81 KB | 0.813 ± 0.051 | not measured |
+| 25 × 8 | 52 KB | 0.802 ± 0.046 | not measured |
+| **25 × 6** | **27 KB** | **0.783 ± 0.050** | **0.891 ± 0.034** |
+
+Majority-class baseline is 0.745, up from the 0.731 reported below.
+
+### Which claims do not survive
+
+**The right-sizing claim.** "5.1× faster and 11.1× smaller for 1.2 points of
+held-out accuracy, a difference well inside one fold standard deviation" fails
+twice. The cost is 4.9 points on the corrected extractor, not 1.2. And the
+reasoning was invalid regardless of the number: both configurations are scored
+on identical folds with identical subjects, so the comparison is paired, and
+its standard error is far smaller than a fold standard deviation, which
+measures spread between subjects rather than uncertainty about the difference.
+A paired difference must not be tested against an unpaired spread.
+
+**Trees and depth are not interchangeable economies.** The submission reduced
+both at once and credited right-sizing in general. Decomposed, going from 100
+trees to 25 at depth 15 costs 0.009 and saves 71 percent of the footprint,
+while going from depth 15 to depth 6 at 25 trees costs 0.040 and saves 79
+percent. Tree count is nearly free; depth is expensive. 25 × 6 was therefore
+the wrong operating point even on the original data. 25 × 8 at 52 KB or
+25 × 10 at 81 KB both fit Cortex-M4 flash, which typically runs 256 KB to 1 MB,
+and recover most of what depth 6 gave away.
+
+**The majority baseline moved, and that is a finding rather than a rounding
+difference.** It rose from 0.731 to 0.745 on the same loader and the same label
+map. Filtering can only discard windows, never add them, so a rising GREEN
+share means RED windows were discarded at a higher rate than GREEN ones:
+roughly 45 of about 655 stress windows, against none of the rest. This is
+differential attrition. The exclusion rule correlates with the outcome, so the
+surviving sample is not the sample intended, and the stress windows that
+survive are the cleanest and plausibly the least intense. Part of the drop from
+0.891 to 0.783 may be that the old pipeline read motion artifact as stress, and
+part may be that the corrected pipeline is scored on an easier RED class. Those
+mechanisms act in opposite directions and have not been separated.
+
+Window coverage is not the channel. Withholding it changes held-out accuracy by
+0.004, from 0.832 to 0.828, and its Gini importance is 0.000 when the other
+seven features are present. The artifact entered through RMSSD and pNN50, where
+a merged beat lands as a several-hundred-millisecond successive difference.
+
+### Not yet re-measured
+
+These figures below are still from the defective extractor and no corrected
+replacement exists yet: the per-operator baselining comparison (0.814 → 0.891),
+the heart-rate withholding ablation (0.891 → 0.780), the SWELL-KW negative
+result, and every nanosecond timing in the optimization tables. The timings
+concern traversal and compilation rather than feature values, so they are
+expected to hold, but they have not been re-run on the current model.
+
+---
+
+
+---
+
 ## Why this is interesting
 
 Most on-device inference work takes a large model and shrinks it to fit a small
