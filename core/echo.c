@@ -8,6 +8,7 @@
 #define ECHO_RR_MIN 250.0f
 #define ECHO_RR_MAX 2500.0f
 #define ECHO_RR_JUMP 0.25f   /* max fractional change between consecutive beats */
+#define ECHO_MAX_REJECT_RUN 4 /* consecutive relative rejections before re-anchor */
 
 void echo_window_init(echo_window_t *w, float window_ms)
 {
@@ -22,10 +23,19 @@ static float win_at(const echo_window_t *w, uint16_t i)
     return w->rr[(uint16_t)((start + i) % ECHO_MAX_BEATS)];
 }
 
+static uint8_t gap_at(const echo_window_t *w, uint16_t i)
+{
+    /* 1 if one or more intervals were rejected immediately before held beat i,
+     * meaning beats i-1 and i were not adjacent in time. */
+    uint16_t start = (uint16_t)((w->head + ECHO_MAX_BEATS - w->count) % ECHO_MAX_BEATS);
+    return w->gap[(uint16_t)((start + i) % ECHO_MAX_BEATS)];
+}
+
 int echo_window_push(echo_window_t *w, float rr_ms)
 {
     if (!(rr_ms >= ECHO_RR_MIN && rr_ms <= ECHO_RR_MAX)) {
         w->n_rejected++;
+        w->pending_gap = 1;
         return 0;
     }
 
@@ -34,13 +44,26 @@ int echo_window_push(echo_window_t *w, float rr_ms)
     if (w->last_accepted > 0.0f) {
         const float ratio = rr_ms / w->last_accepted;
         if (ratio < 1.0f - ECHO_RR_JUMP || ratio > 1.0f + ECHO_RR_JUMP) {
-            w->n_rejected++;
-            /* Do not update last_accepted: a run of rejections should stay
-             * anchored to the last trustworthy beat, not drift toward the
-             * artifacts. */
-            return 0;
+            /* Holding last_accepted through a run of rejections is right for
+             * an isolated artifact: the anchor should not drift toward the
+             * noise. But a genuine sustained step larger than ECHO_RR_JUMP,
+             * such as a posture change or a sensor reacquiring at a new rate,
+             * then rejects every subsequent beat forever, because the anchor
+             * is never updated. Cap the run: after ECHO_MAX_REJECT_RUN
+             * consecutive relative rejections, treat the level as real,
+             * accept this beat and re-anchor to it. The pending gap flag is
+             * still set, so the difference spanning the re-anchor is
+             * suppressed rather than computed across the step. */
+            if (w->reject_run < ECHO_MAX_REJECT_RUN) {
+                w->reject_run++;
+                w->n_rejected++;
+                w->pending_gap = 1;
+                return 0;
+            }
+            w->pending_gap = 1;     /* re-anchoring is itself a discontinuity */
         }
     }
+    w->reject_run = 0;
     w->last_accepted = rr_ms;
     w->n_accepted++;
 
@@ -48,7 +71,11 @@ int echo_window_push(echo_window_t *w, float rr_ms)
         w->span_ms -= win_at(w, 0);
         w->count--;
     }
-    w->rr[w->head] = rr_ms;
+    w->rr[w->head]  = rr_ms;
+    /* Carry any pending rejection onto this beat, then clear it. The flag
+     * marks the discontinuity between the previous held beat and this one. */
+    w->gap[w->head] = w->pending_gap;
+    w->pending_gap  = 0;
     w->head = (uint16_t)((w->head + 1) % ECHO_MAX_BEATS);
     w->count++;
     w->span_ms += rr_ms;
@@ -70,24 +97,33 @@ int echo_features(const echo_window_t *w, float *out)
 {
     if (w->count < ECHO_MIN_BEATS) return 0;
 
+    /* Two passes. The one-pass identities, var = E[x^2] - E[x]^2 and the
+     * uncentred slope numerator, subtract two nearly equal large numbers. At
+     * rest a 4 ms SD on an 820 ms mean makes E[x^2] and E[x]^2 agree to five
+     * digits, and float32 carries about seven, so most of the result is lost
+     * to cancellation. Measured against the float64 twin that cost up to
+     * 0.4 percent on SDNN, worse as variability falls, which is exactly the
+     * regime the device is meant to resolve. Centring first is stable and
+     * costs one extra pass over at most 512 floats. */
     const uint16_t n = w->count;
-    float sum = 0.0f, sumsq = 0.0f;
+    float sum = 0.0f;
     float diff_sq = 0.0f;
     uint16_t nn50 = 0;
-    float sum_i = 0.0f, sum_i2 = 0.0f, sum_ix = 0.0f;
+    uint16_t n_diff = 0;
     float prev = win_at(w, 0);
 
     for (uint16_t i = 0; i < n; i++) {
         const float x = win_at(w, i);
-        const float fi = (float)i;
-        sum   += x;
-        sumsq += x * x;
-        sum_i  += fi;
-        sum_i2 += fi * fi;
-        sum_ix += fi * x;
-        if (i > 0) {
+        sum += x;
+        /* Successive differences only between beats adjacent in time. A beat
+         * rejected between i-1 and i makes their difference meaningless, so it
+         * is suppressed rather than computed across the discontinuity. The
+         * denominator counts differences actually taken, not n - 1, which
+         * overcounts once any interval has been dropped. */
+        if (i > 0 && !gap_at(w, i)) {
             const float d = x - prev;
             diff_sq += d * d;
+            n_diff++;
             if (d > 50.0f || d < -50.0f) nn50++;
         }
         prev = x;
@@ -95,13 +131,23 @@ int echo_features(const echo_window_t *w, float *out)
 
     const float fn      = (float)n;
     const float mean_rr = sum / fn;
-    float var = sumsq / fn - mean_rr * mean_rr;
+    const float mean_i  = (fn - 1.0f) * 0.5f;
+
+    float sum_dx2 = 0.0f, sum_di2 = 0.0f, sum_dixd = 0.0f;
+    for (uint16_t i = 0; i < n; i++) {
+        const float dx = win_at(w, i) - mean_rr;
+        const float di = (float)i - mean_i;
+        sum_dx2  += dx * dx;
+        sum_di2  += di * di;
+        sum_dixd += di * dx;
+    }
+
+    float var = sum_dx2 / fn;
     if (var < 0.0f) var = 0.0f;
     const float sdnn  = sqrtf(var);
-    const float rmssd = (n > 1) ? sqrtf(diff_sq / (float)(n - 1)) : 0.0f;
+    const float rmssd = (n_diff > 0) ? sqrtf(diff_sq / (float)n_diff) : 0.0f;
 
-    const float denom = fn * sum_i2 - sum_i * sum_i;
-    const float slope = (denom != 0.0f) ? (fn * sum_ix - sum_i * sum) / denom : 0.0f;
+    const float slope = (sum_di2 != 0.0f) ? sum_dixd / sum_di2 : 0.0f;
 
     float coverage = w->span_ms / w->window_ms;
     if (coverage > 1.0f) coverage = 1.0f;
@@ -110,7 +156,7 @@ int echo_features(const echo_window_t *w, float *out)
     out[ECHO_F_MEAN_HR]  = 60000.0f / mean_rr;
     out[ECHO_F_SDNN]     = sdnn;
     out[ECHO_F_RMSSD]    = rmssd;
-    out[ECHO_F_PNN50]    = (n > 1) ? (float)nn50 / (float)(n - 1) : 0.0f;
+    out[ECHO_F_PNN50]    = (n_diff > 0) ? (float)nn50 / (float)n_diff : 0.0f;
     out[ECHO_F_RR_SLOPE] = slope;
     out[ECHO_F_HR_CV]    = (mean_rr > 0.0f) ? sdnn / mean_rr : 0.0f;
     out[ECHO_F_COVERAGE] = coverage;

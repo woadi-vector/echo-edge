@@ -1,0 +1,51 @@
+﻿name: parity
+
+# The C feature extractor and its Python twin must compute the same numbers,
+# or the model is scored on different values than it was trained on. They
+# drifted silently for months because the check this repo documented was
+# never written. It runs here now, on every push, because no development
+# machine in use has a C toolchain.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install numpy
+        run: pip install --quiet numpy
+
+      # -Werror: a warning in the extractor is a defect, not a note.
+      - name: Build the C extractor
+        run: |
+          cc -std=c99 -Wall -Wextra -Werror -Icore -Ibench -O0 \
+             core/echo.c bench/parity.c -lm -o bench-parity
+
+      - name: C against the Python twin
+        run: python3 train/parity.py
+
+      # The gap-handling cases, as a build and run check. parity.py is the
+      # gate; this catches a crash or an underflow that parity would not
+      # surface on its own series.
+      - name: Gap regression
+        run: |
+          cc -std=c99 -Wall -Wextra -Werror -Icore -O0 \
+             bench/test_gap.c core/echo.c -lm -o test-gap
+          ./test-gap
+
+      - name: Build the benchmark at both flag sets
+        run: |
+          cc -std=c99 -Wall -Wextra -Werror -Icore -Ibench -O0 \
+             core/echo.c bench/bench.c -lm -o bench-baseline
+          cc -std=c99 -Wall -Wextra -Werror -Icore -Ibench \
+             -O3 -ffast-math -funroll-loops \
+             core/echo.c bench/bench.c -lm -o bench-optimized

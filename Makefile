@@ -18,7 +18,7 @@ endif
 
 SRC := core/echo.c bench/bench.c
 
-.PHONY: all model bench baseline optimized clean compare
+.PHONY: all model bench baseline optimized clean compare parity
 
 all: optimized
 
@@ -42,5 +42,11 @@ compare: baseline optimized
 core/echo_model.h:
 	python3 train/train.py
 
+bench-parity: core/echo.c bench/parity.c core/echo.h
+	$(CC) $(COMMON) $(BASE_FLAGS) core/echo.c bench/parity.c -lm -o bench-parity
+
+parity: bench-parity
+	python3 train/parity.py
+
 clean:
-	rm -f bench-baseline bench-optimized wasm/echo.js wasm/echo.wasm
+	rm -f bench-baseline bench-optimized bench-parity wasm/echo.js wasm/echo.wasm

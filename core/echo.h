@@ -56,14 +56,25 @@ enum {
 };
 
 /* Rolling beat-to-beat window. Fixed capacity; oldest beats are evicted
- * once the window duration is exceeded. */
+ * once the window duration is exceeded.
+ *
+ * `gap` records, for each held interval, whether one or more intervals were
+ * rejected immediately before it. Rejected intervals never enter `rr`, so
+ * without this flag two intervals that were not adjacent in time appear
+ * adjacent in storage, and a successive difference computed between them is
+ * spurious. RMSSD and pNN50 both consume successive differences, so both are
+ * affected. `echo_features` uses `gap` to suppress those differences rather
+ * than compute across them. */
 typedef struct {
     float    rr[ECHO_MAX_BEATS];   /* RR intervals, ms */
+    uint8_t  gap[ECHO_MAX_BEATS];  /* 1 if a beat was rejected just before rr[i] */
     uint16_t head;                 /* next write index */
     uint16_t count;                /* beats currently held */
     float    span_ms;              /* sum of held RR intervals */
     float    window_ms;            /* target window duration */
     float    last_accepted;        /* previous kept interval, for the relative filter */
+    uint8_t  pending_gap;          /* a rejection is awaiting the next accepted beat */
+    uint8_t  reject_run;           /* consecutive relative rejections, for re-anchor */
     uint32_t n_accepted;           /* intervals kept */
     uint32_t n_rejected;           /* intervals dropped as artifacts */
 } echo_window_t;
@@ -123,6 +134,10 @@ void echo_window_init(echo_window_t *w, float window_ms);
  * So a relative filter also rejects any interval differing by more than
  * ECHO_RR_JUMP from its predecessor. Real beat-to-beat change is gradual;
  * a sudden near-doubling or halving is a detection artifact, not physiology.
+ *
+ * A rejection also sets a pending flag, recorded on the next accepted beat,
+ * so that successive differences spanning the rejected interval can be
+ * suppressed rather than computed across the discontinuity.
  *
  * Returns 1 if the interval was accepted. */
 int  echo_window_push(echo_window_t *w, float rr_ms);

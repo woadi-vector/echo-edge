@@ -10,3 +10,9 @@ study/windows.csv
 # participant sessions + generated outputs ? never commit
 echo_*.csv
 study/windows.csv
+
+# Bytecode and backups. The stale .pyc in train/ was tracked for months and
+# shadowed a fix.
+__pycache__/
+*.pyc
+*.bak
