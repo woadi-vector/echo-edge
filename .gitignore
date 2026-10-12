@@ -16,3 +16,8 @@ study/windows.csv
 __pycache__/
 *.pyc
 *.bak
+
+# Held out pending the MTSU Policy 140 ownership determination.
+# Do not commit without checking that determination first.
+data/echo_gate.py
+data/mmash_reliability.py

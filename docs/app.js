@@ -118,32 +118,57 @@ function persistBeats() {
   catch { /* quota or private mode, as in persistSession */ }
 }
 
+/* Recover whatever survived, each log independently.
+ *
+ * The two mirrors have independent lifetimes: exporting windows clears the
+ * window mirror and leaves the beat mirror alone, so after a window export
+ * and a reload the beats are present while the windows are gone. An earlier
+ * version returned early when the window mirror was missing and never looked
+ * at the beat mirror, which left the interval series sitting in storage,
+ * unreachable through the interface, with the export control disabled. The
+ * next clear or participant switch then destroyed it silently. Since the
+ * interval series is the measurement and the window log is a convenience,
+ * that was exactly the wrong one to lose. Read both, report both. */
 function recoverSession() {
   activePid = participant();
+
   let saved = null;
   try { saved = JSON.parse(localStorage.getItem(sessionKey()) || 'null'); }
   catch { saved = null; }
-  if (!Array.isArray(saved) || !saved.length) return;
-
-  sessionLog = saved;
-  pendingMark = null;
-  el.logged.textContent = sessionLog.length;
-  el.export.disabled = false;
-  el.discard.disabled = false;
+  const haveWindows = Array.isArray(saved) && saved.length > 0;
 
   let savedBeats = null;
   try { savedBeats = JSON.parse(localStorage.getItem(beatsKey()) || 'null'); }
   catch { savedBeats = null; }
-  if (Array.isArray(savedBeats) && savedBeats.length) {
+  const haveBeats = Array.isArray(savedBeats) && savedBeats.length > 0;
+
+  if (!haveWindows && !haveBeats) return;
+
+  if (haveWindows) {
+    sessionLog = saved;
+    pendingMark = null;
+    el.logged.textContent = sessionLog.length;
+    el.export.disabled = false;
+    if (sessionLog.length % PERSIST_EVERY === 0) persistSession();
+  }
+
+  if (haveBeats) {
     beatLog = savedBeats;
     packetSeq = beatLog[beatLog.length - 1][2] || 0;
     el.beats_logged.textContent = beatLog.length;
     el.exportbeats.disabled = false;
   }
-  if (sessionLog.length % PERSIST_EVERY === 0) persistSession();
+
+  el.discard.disabled = false;
+
+  const parts = [];
+  if (haveWindows) parts.push(`${sessionLog.length} window rows`);
+  if (haveBeats) parts.push(`${beatLog.length} beats`);
   el.detail.textContent =
-    `Recovered ${saved.length} rows from an interrupted session — export or ` +
-    `clear before starting a new one`;
+    `Recovered ${parts.join(' and ')} for ${activePid}` +
+    (haveBeats && !haveWindows
+      ? ' — the windows were already exported, the intervals were not. Export the beats before clearing.'
+      : ' from an interrupted session — export or clear before starting a new one');
 }
 
 function clearSession() {
@@ -193,6 +218,29 @@ function baselineKey() { return `${BASELINE_KEY}.${participant()}`; }
 function visitNo() {
   const v = parseInt(el.visit.value, 10);
   return Number.isFinite(v) && v > 0 ? String(v) : '';
+}
+
+/* Identity has to be complete before a single beat is recorded.
+ *
+ * A reliability estimate on a crossed design needs to know which occasion
+ * each measurement belongs to. Position in a file is not an occasion label,
+ * and a visit number cannot be reconstructed afterwards from a timestamp once
+ * a session has been missed or rescheduled. Both sessions exported on 9
+ * October carry a blank visit field and `vx` in their filenames, which makes
+ * them unusable for a two-way model no matter what else is right about them.
+ *
+ * The participant check reads the input directly rather than through
+ * participant(), because that helper substitutes DEFAULT_PID for an empty
+ * box. A silent default is how a session ends up filed under someone else. */
+function identityComplete() {
+  const missing = [];
+  if (!(el.pid.value || '').trim()) missing.push('participant code');
+  if (!visitNo()) missing.push('visit number');
+  if (!phaseNow()) missing.push('protocol phase');
+  if (!missing.length) return true;
+  fail(`Cannot start: enter the ${missing.join(', ')} first. `
+       + 'These are stamped on every row and cannot be added later.');
+  return false;
 }
 
 /* Protocol phase, stamped on every row of both logs.
@@ -418,6 +466,7 @@ function parseHR(dv) {
 }
 
 async function connect() {
+  if (!identityComplete()) return;
   if (!navigator.bluetooth) {
     fail('Web Bluetooth unavailable. Use Chrome or Edge over HTTPS.');
     return;
@@ -465,6 +514,7 @@ async function connect() {
 
 function startSim() {
   if (simTimer) { stopSim(); return; }
+  if (!identityComplete()) return;
   stopSimNoLabel();
   el.device.textContent = 'simulated';
   el.status.textContent = 'streaming';
@@ -753,7 +803,7 @@ function drawTrace(state) {
  * arrived in, so a dropped notification can be found by comparing the jump
  * in elapsed_s against the intervals that bridge it. */
 function exportBeats() {
-  if (!beatLog.length) return;
+  if (!beatLog.length) return false;
   const header = ['timestamp', 'elapsed_s', 'packet', 'rr_ms',
                   'participant', 'visit', 'phase', 'activity'].join(',');
   const rows = beatLog.map((r) => r.join(','));
@@ -762,7 +812,7 @@ function exportBeats() {
   const bad = rows.findIndex((r) => r.split(',').length !== nHead);
   if (bad !== -1) {
     fail(`Export aborted: beat row has ${rows[bad].split(',').length} fields, header has ${nHead}`);
-    return;
+    return false;
   }
 
   const blob = new Blob([[header, ...rows].join('\n')], { type: 'text/csv' });
@@ -772,10 +822,34 @@ function exportBeats() {
   link.download = `echo_beats_${participant()}_v${visitNo() || 'x'}_${stamp}.csv`;
   link.click();
   URL.revokeObjectURL(link.href);
+
+  // The rows are on disk, so the recovery mirror has done its job. Mirrors
+  // the window export rather than holding the beats back, which would leave
+  // a stale copy to be recovered after the real file already exists.
+  try { localStorage.removeItem(beatsKey()); } catch { /* ignore */ }
+  return true;
 }
 
+/* One action writes both files.
+ *
+ * The interval series and the window log are not alternatives. The windows
+ * record what the device decided at the time; the intervals are the
+ * measurement, and they are the only thing a corrected pipeline can be rerun
+ * against. A separate button for the one that matters means the session where
+ * someone forgets is the session that cannot be reanalysed, and that already
+ * happened: the July and August recordings exist only as processed output
+ * because the client of that era never wrote intervals at all, so they cannot
+ * be reprocessed by anything, ever.
+ *
+ * Beats go first, so that if the browser blocks the second of two
+ * programmatic downloads it is the replaceable file that is lost. Chrome may
+ * ask once to allow multiple downloads from this origin; allow it. */
 function exportCSV() {
-  if (!sessionLog.length) return;
+  const wroteBeats = exportBeats();
+  if (!sessionLog.length) {
+    if (!wroteBeats) fail('Nothing to export.');
+    return;
+  }
   const header = ['timestamp', 'elapsed_s', 'participant', 'visit', 'phase',
                   'note', 'activity', 'mark',
                   'temp_f', 'humidity_pct', 'wbgt_f', 'setting', 'signal_quality', 'state', 'raw_state',
