@@ -475,7 +475,7 @@ async function connect() {
     el.status.textContent = 'pairing';
     const dev = await navigator.bluetooth.requestDevice({
       filters: [{ services: [HR_SERVICE] }],
-      optionalServices: [HR_SERVICE],
+      optionalServices: [HR_SERVICE, PMD_SERVICE],
     });
     dev.addEventListener('gattserverdisconnected', () => {
       el.status.textContent = 'disconnected';
@@ -504,6 +504,8 @@ async function connect() {
     el.connect.classList.add('armed');
     el.detail.textContent = 'Filling the 60-second window';
     holdWakeLock();
+    // Accelerometer rides alongside; a refusal leaves heart rate untouched.
+    startMotion(server);
   } catch (err) {
     el.status.textContent = 'standby';
     if (err && err.name !== 'NotFoundError') fail(err.message);
@@ -663,7 +665,7 @@ function ingest(rrMs) {
   // is a judgement the current extractor makes and a future one may make
   // differently, so the judgement is not what gets stored: the interval is.
   beatLog.push([new Date().toISOString(), elapsed, packetSeq, rrMs.toFixed(1),
-                participant(), visitNo(), phaseNow(), mode]);
+                participant(), visitNo(), phaseNow(), mode, motionNow()]);
   el.beats_logged.textContent = beatLog.length;
   el.exportbeats.disabled = false;
   if (beatLog.length % PERSIST_BEATS_EVERY === 0) persistBeats();
@@ -735,6 +737,7 @@ function render({ state, conf, f }) {
     mark: pendingMark || '',
     env: environment(),
     quality: echo.quality().toFixed(3),
+    motion: motionNow(),
     raw: STATES[echo.rawState()].toUpperCase(),
     state: STATES[state].toUpperCase(),
     conf: conf.toFixed(4),
@@ -805,8 +808,10 @@ function drawTrace(state) {
 function exportBeats() {
   if (!beatLog.length) return false;
   const header = ['timestamp', 'elapsed_s', 'packet', 'rr_ms',
-                  'participant', 'visit', 'phase', 'activity'].join(',');
-  const rows = beatLog.map((r) => r.join(','));
+                  'participant', 'visit', 'phase', 'activity', 'motion_mg'].join(',');
+  // Rows recovered from a session saved before the motion column existed
+  // carry one field fewer; pad them blank rather than abort the export.
+  const rows = beatLog.map((r) => (r.length === 8 ? [...r, ''] : r).join(','));
 
   const nHead = header.split(',').length;
   const bad = rows.findIndex((r) => r.split(',').length !== nHead);
@@ -846,20 +851,21 @@ function exportBeats() {
  * ask once to allow multiple downloads from this origin; allow it. */
 function exportCSV() {
   const wroteBeats = exportBeats();
+  exportMotion();
   if (!sessionLog.length) {
     if (!wroteBeats) fail('Nothing to export.');
     return;
   }
   const header = ['timestamp', 'elapsed_s', 'participant', 'visit', 'phase',
                   'note', 'activity', 'mark',
-                  'temp_f', 'humidity_pct', 'wbgt_f', 'setting', 'signal_quality', 'state', 'raw_state',
+                  'temp_f', 'humidity_pct', 'wbgt_f', 'setting', 'signal_quality', 'motion_mg', 'state', 'raw_state',
                   'confidence', 'readiness', 'trend', 'p_green', 'p_amber', 'p_red',
                   ...FEATURES, 'model'].join(',');
   const model = echo.modelId();
   const rows = sessionLog.map((r) =>
     [r.t, r.elapsed, r.pid, r.visit || '', r.phase || '',
      r.note, r.mode || '', r.mark || '',
-     ...r.env, r.quality, r.state, r.raw, r.conf, r.readiness, r.trend,
+     ...r.env, r.quality, r.motion ?? '', r.state, r.raw, r.conf, r.readiness, r.trend,
      ...r.votes, ...r.f, model].join(','));
 
   // Header and rows are built separately, so they can silently drift apart —
