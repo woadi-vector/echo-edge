@@ -8,9 +8,15 @@
       clearInterval(notifTimer);
       notifTimer = setInterval(() => {
         if (bt.zombie) return;
-        const b = new DataView(new ArrayBuffer(4));
-        b.setUint8(0, 0x10); b.setUint8(1, 70);
-        b.setUint16(2, Math.round((850 + Math.random() * 40) / 1000 * 1024), true);
+        let b;
+        if (bt.noContact) {            // contact supported, not detected, no intervals
+          b = new DataView(new ArrayBuffer(2));
+          b.setUint8(0, 0x04); b.setUint8(1, 70);
+        } else {
+          b = new DataView(new ArrayBuffer(4));
+          b.setUint8(0, 0x16); b.setUint8(1, 70);
+          b.setUint16(2, Math.round((850 + Math.random() * 40) / 1000 * 1024), true);
+        }
         this.value = b; bt.packets++;
         this.dispatchEvent(new Event('characteristicvaluechanged'));
       }, 50);
