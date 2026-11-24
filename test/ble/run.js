@@ -18,9 +18,11 @@ const wait = (ms) => new Promise(r => setTimeout(r, ms));
   if (scenario === 'hang') { await page.evaluate(() => { __bt.mode = 'hang'; __bt.drop(); }); }
   if (scenario === 'zombie') { await page.evaluate(() => { __bt.zombie = true; }); }
   if (scenario === 'failService') { await page.evaluate(() => { __bt.mode = 'failService'; __bt.drop(); }); }
+  if (scenario === 'contact') { await page.evaluate(() => { __bt.noContact = true; setTimeout(() => { __bt.noContact = false; }, 6000); }); }
   if (scenario === 'repair') { await page.evaluate(() => { __bt.drop(); }); await wait(200); await page.click('#connect'); }
   if (scenario === 'cancel') { await page.evaluate(() => { __bt.drop(); __bt.cancelChooser = true; }); await wait(200); await page.click('#connect'); }
   for (let i = 0; i < 6; i++) { await wait(5000); if (scenario==='zombie' && i===2) await page.evaluate(() => { __bt.zombie = false; }); console.log(`t+${(i+1)*5}s`, await st()); }
   console.log(await page.evaluate(() => __bt.log.join(' ')));
+  console.log('link log:\n' + await page.evaluate(() => linkLog.map((r) => r.join(',')).join('\n')));
   await browser.close();
 })();

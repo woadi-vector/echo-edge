@@ -41,6 +41,7 @@ const el = {
   pskip: $('pskip'), sampling: $('sampling'),
   visit: $('visit'), phasebtns: $('phasebtns'), beats_logged: $('beats_logged'),
   exportbeats: $('exportbeats'), awake: $('awake'),
+  exportlink: $('exportlink'), contact: $('contact'),
 };
 
 /* Environment is read at log time, not at session start, so a value entered
@@ -175,6 +176,7 @@ function clearSession() {
   sessionLog = [];
   beatLog = [];
   packetSeq = 0;
+  linkLog = [];
   sessionStart = null;
   try { localStorage.removeItem(sessionKey()); } catch { /* ignore */ }
   try { localStorage.removeItem(beatsKey()); } catch { /* ignore */ }
@@ -479,6 +481,14 @@ function forgetBaseline() {
 
 /* ---------- ingest ---------- */
 
+/* Flags bits 1-2: bit 2 says the strap reports skin contact, bit 1 says
+ * contact is detected. Returns null when the strap does not report it. */
+function parseContact(dv) {
+  const flags = dv.getUint8(0);
+  if (!(flags & 0x04)) return null;
+  return !!(flags & 0x02);
+}
+
 function parseHR(dv) {
   const flags = dv.getUint8(0);
   let i = 1;
@@ -536,6 +546,23 @@ let linking = false;      // an attempt (or the device chooser) is in progress
 let lastPacketAt = 0;
 let stallTimer = null;
 let dropCount = 0;
+
+/* Link log. The beat file shows that data stopped; it cannot say whether the
+ * radio stopped delivering notifications or the strap kept notifying with no
+ * beats in them (dry electrodes, lost skin contact). Those need different
+ * fixes, so every link event, every notification gap, and every change in
+ * the strap's own contact flag is written here and exported beside the beats. */
+const GAP_LOG_MS = 2000;
+let linkLog = [];
+let contactOk = null;     // null until the strap reports contact support
+let emptyRun = 0;         // consecutive notifications that carried no intervals
+
+function logLink(event, detail) {
+  const elapsed = sessionStart === null ? '' : ((Date.now() - sessionStart) / 1000).toFixed(2);
+  const clean = String(detail == null ? '' : detail).replace(/[",\n]/g, ' ').slice(0, 120);
+  linkLog.push([new Date().toISOString(), elapsed, event, clean]);
+  if (el.exportlink) el.exportlink.disabled = false;
+}
 
 /* Features are differences between adjacent intervals in a rolling window. A
  * window straddling an outage mixes beats from either side of it, so the
@@ -622,6 +649,7 @@ async function connect() {
     if (prev && prevWanted) {
       // Chooser dismissed mid-session: keep trying the strap already in use.
       wantStream = true;
+      logLink('chooser_closed', 'resuming previous strap');
       scheduleReconnect('chooser closed');
       return;
     }
@@ -637,6 +665,7 @@ async function connect() {
     await openStream();
   } catch (err) {
     if (err && err.superseded) return;
+    logLink('first_connect_failed', err && err.message);
     // The strap was chosen, so a failed first attempt is retried like a drop
     // rather than ending in 'standby' with the link half open.
     scheduleReconnect(err && err.message);
@@ -678,6 +707,7 @@ async function openStream() {
   clearInterval(stallTimer);
   stallTimer = setInterval(checkStall, 2000);
   el.device.textContent = dev.name || 'heart rate strap';
+  logLink('connected', dev.name || '');
   linkState('streaming', 'on');
   el.detail.textContent = 'Filling the 60-second window';
   holdWakeLock();
@@ -690,9 +720,26 @@ function checkStall() {
 
 function onNotification(e) {
   if (e.target !== btChar) return;   // a characteristic from an abandoned attempt
-  lastPacketAt = Date.now();
-  const rr = parseHR(e.target.value);
-  if (!rr.length) return;
+  const now = Date.now();
+  const silent = now - lastPacketAt;
+  if (silent > GAP_LOG_MS) logLink('notify_gap', `${(silent / 1000).toFixed(1)} s with no notifications`);
+  lastPacketAt = now;
+  const dv = e.target.value;
+  const contact = parseContact(dv);
+  if (contact !== null && contact !== contactOk) {
+    if (contactOk !== null || !contact) logLink(contact ? 'contact_ok' : 'contact_lost', 'strap skin-contact flag');
+    contactOk = contact;
+    el.contact.textContent = contact ? 'good' : 'LOST: wet the electrodes';
+    el.contact.style.color = contact ? 'var(--dim)' : 'var(--red)';
+  }
+  const rr = parseHR(dv);
+  if (!rr.length) {
+    emptyRun++;
+    if (emptyRun === 3) logLink('no_beats', 'notifications arriving with no intervals');
+    return;
+  }
+  if (emptyRun >= 3) logLink('beats_resumed', `after ${emptyRun} empty notifications`);
+  emptyRun = 0;
   // One sequence number per notification. Interval values reconstruct the
   // fine time axis on their own, but a dropped notification is invisible
   // to a cumulative sum: the series simply continues, shorter. Grouping
@@ -720,6 +767,7 @@ function linkLost(reason) {
   if (!wantStream) return;
   dropCount++;
   console.warn(`[echo] link lost (${dropCount}): ${reason}`);
+  logLink('lost', reason);
   persistSession();
   persistBeats();
   resyncBeats = RESYNC_BEATS;
@@ -748,6 +796,7 @@ function scheduleReconnect(reason) {
     } catch (err) {
       if (err && err.superseded) return;
       console.warn('[echo] reconnect failed:', err && err.message);
+      logLink('retry_failed', err && err.message);
       scheduleReconnect(err && err.message);
     }
   }, wait);
@@ -1083,6 +1132,19 @@ function exportBeats() {
   return true;
 }
 
+function exportLink() {
+  if (!linkLog.length) return false;
+  const header = 'timestamp,elapsed_s,event,detail';
+  const blob = new Blob([[header, ...linkLog.map((r) => r.join(','))].join('\n')], { type: 'text/csv' });
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `echo_link_${participant()}_v${visitNo() || 'x'}_${stamp}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  return true;
+}
+
 /* One action writes both files.
  *
  * The interval series and the window log are not alternatives. The windows
@@ -1100,7 +1162,8 @@ function exportBeats() {
 function exportCSV() {
   const wroteBeats = exportBeats();
   if (!sessionLog.length) {
-    if (!wroteBeats) fail('Nothing to export.');
+    const wroteLink = exportLink();
+    if (!wroteBeats && !wroteLink) fail('Nothing to export.');
     return;
   }
   const header = ['timestamp', 'elapsed_s', 'participant', 'visit', 'phase',
@@ -1131,6 +1194,7 @@ function exportCSV() {
   link.download = `echo_windows_${participant()}_v${visitNo() || 'x'}_${stamp}.csv`;
   link.click();
   URL.revokeObjectURL(link.href);
+  exportLink();   // last: the least costly file to lose to a download block
 
   // Exported rows are safe on disk; the recovery copy has done its job.
   try { localStorage.removeItem(sessionKey()); } catch { /* ignore */ }
@@ -1214,6 +1278,7 @@ el.sim.addEventListener('click', startSim);
 el.forget.addEventListener('click', forgetBaseline);
 el.export.addEventListener('click', exportCSV);
 el.exportbeats.addEventListener('click', exportBeats);
+el.exportlink.addEventListener('click', exportLink);
 el.discard.addEventListener('click', () => {
   if ((sessionLog.length || beatLog.length) &&
       !confirm(`Discard ${sessionLog.length} window rows and ${beatLog.length} beats?`)) return;
