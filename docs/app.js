@@ -223,7 +223,8 @@ document.addEventListener('visibilitychange', () => {
       // builds without ever firing gattserverdisconnected, so returning to
       // the foreground is also the moment to check whether the link is
       // actually still there rather than trusting the last event seen.
-      if (btDevice && (!btDevice.gatt || !btDevice.gatt.connected)) onDisconnected();
+      if (btDevice && !linking && !reconnectTimer
+          && (!btDevice.gatt || !btDevice.gatt.connected)) linkLost('lost while in background');
     }
   } else {
     persistSession();   // last chance before the tab may be discarded
@@ -514,6 +515,28 @@ let reconnectTries = 0;
 let reconnectTimer = null;
 let wantStream = false;
 
+/* One link attempt at a time, and every attempt can end.
+ *
+ * On Windows, Chrome's gatt.connect() can wait indefinitely for a strap that
+ * has stopped advertising, and the old recovery path awaited it with no
+ * deadline: one hung attempt froze the session on 'reconnecting (1)' until
+ * the tab was reloaded. A failed attempt also left Chrome holding the half
+ * open link, so the next Connect press met a strap that was still claimed.
+ * Each attempt now has a deadline, carries a generation number so a late
+ * finisher from an abandoned attempt cannot attach itself, and hangs up on
+ * failure so the strap is released before the next try.
+ *
+ * The stall watchdog covers the opposite failure: the link reports connected
+ * but no notifications arrive. The H10 notifies about once a second, so ten
+ * seconds of silence is a dead link, not a slow heart. */
+const LINK_TIMEOUT_MS = 12000;
+const STALL_MS = 10000;
+let linkGen = 0;
+let linking = false;      // an attempt (or the device chooser) is in progress
+let lastPacketAt = 0;
+let stallTimer = null;
+let dropCount = 0;
+
 /* Features are differences between adjacent intervals in a rolling window. A
  * window straddling an outage mixes beats from either side of it, so the
  * splice contributes one difference that is not a physiological one. The
@@ -530,45 +553,144 @@ function linkState(text, cls) {
   el.connect.classList.toggle('armed', cls === 'on');
 }
 
+function superseded() {
+  const e = new Error('superseded by a newer link attempt');
+  e.superseded = true;
+  return e;
+}
+
+function withTimeout(promise, ms, what) {
+  let t;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      t = setTimeout(() => reject(new Error(`${what} timed out after ${ms / 1000} s`)), ms);
+    }),
+  ]).finally(() => clearTimeout(t));
+}
+
+function dropChar() {
+  if (btChar) btChar.removeEventListener('characteristicvaluechanged', onNotification);
+  btChar = null;
+}
+
+/* Release Chrome's hold on the strap. disconnect() also aborts a pending
+ * connect(), which is the only way to cancel one. Safe to call in any state. */
+function hangUp() {
+  clearInterval(stallTimer);
+  stallTimer = null;
+  dropChar();
+  try { if (btDevice && btDevice.gatt) btDevice.gatt.disconnect(); } catch { /* already gone */ }
+}
+
+function useDevice(dev) {
+  if (btDevice && btDevice !== dev) {
+    btDevice.removeEventListener('gattserverdisconnected', onDisconnected);
+  }
+  btDevice = dev;
+  // Chrome hands back the same object for the same strap, so a second
+  // addEventListener would be a no-op; removing first makes that explicit.
+  btDevice.removeEventListener('gattserverdisconnected', onDisconnected);
+  btDevice.addEventListener('gattserverdisconnected', onDisconnected);
+}
+
 async function connect() {
   if (!identityComplete()) return;
   if (!navigator.bluetooth) {
     fail('Web Bluetooth unavailable. Use Chrome or Edge over HTTPS.');
     return;
   }
-  clearTimeout(reconnectTimer);   // a manual re-pair must not race the retry
+  // A manual pair supersedes whatever recovery was running, and the strap is
+  // released before the chooser opens so it is not still claimed by this tab.
+  const prev = btDevice;
+  const prevWanted = wantStream;
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  wantStream = false;
+  linkGen++;
+  linking = true;
+  hangUp();
+  let dev;
   try {
     el.status.textContent = 'pairing';
-    btDevice = await navigator.bluetooth.requestDevice({
+    dev = await navigator.bluetooth.requestDevice({
       filters: [{ services: [HR_SERVICE] }],
       optionalServices: [HR_SERVICE],
     });
-    btDevice.addEventListener('gattserverdisconnected', onDisconnected);
-    wantStream = true;
-    await openStream();
   } catch (err) {
-    wantStream = false;
+    linking = false;
+    if (prev && prevWanted) {
+      // Chooser dismissed mid-session: keep trying the strap already in use.
+      wantStream = true;
+      scheduleReconnect('chooser closed');
+      return;
+    }
     el.status.textContent = 'standby';
     if (err && err.name !== 'NotFoundError') fail(err.message);
+    return;
+  }
+  linking = false;
+  useDevice(dev);
+  wantStream = true;
+  reconnectTries = 0;
+  try {
+    await openStream();
+  } catch (err) {
+    if (err && err.superseded) return;
+    // The strap was chosen, so a failed first attempt is retried like a drop
+    // rather than ending in 'standby' with the link half open.
+    scheduleReconnect(err && err.message);
   }
 }
 
 async function openStream() {
-  const server = await btDevice.gatt.connect();
-  btChar = await (await server.getPrimaryService(HR_SERVICE))
-    .getCharacteristic(HR_CHAR);
-  await btChar.startNotifications();
-  btChar.addEventListener('characteristicvaluechanged', onNotification);
+  const gen = ++linkGen;
+  const dev = btDevice;
+  linking = true;
+  el.status.textContent = reconnectTries ? `reconnecting (${reconnectTries})` : 'connecting';
+  const attempt = (async () => {
+    const server = await dev.gatt.connect();
+    if (gen !== linkGen) throw superseded();
+    const ch = await (await server.getPrimaryService(HR_SERVICE))
+      .getCharacteristic(HR_CHAR);
+    if (gen !== linkGen) throw superseded();
+    dropChar();
+    btChar = ch;
+    ch.addEventListener('characteristicvaluechanged', onNotification);
+    await ch.startNotifications();
+    if (gen !== linkGen) throw superseded();
+  })();
+  attempt.catch(() => {});   // a late rejection after the deadline is expected
+  try {
+    await withTimeout(attempt, LINK_TIMEOUT_MS, 'Bluetooth connect');
+  } catch (err) {
+    if (gen !== linkGen) throw superseded();
+    linkGen++;               // anything still running from this attempt is now stale
+    linking = false;
+    hangUp();
+    throw err;
+  }
+  linking = false;
 
   stopSim();
   reconnectTries = 0;
-  el.device.textContent = btDevice.name || 'heart rate strap';
+  lastPacketAt = Date.now();
+  clearInterval(stallTimer);
+  stallTimer = setInterval(checkStall, 2000);
+  el.device.textContent = dev.name || 'heart rate strap';
   linkState('streaming', 'on');
   el.detail.textContent = 'Filling the 60-second window';
   holdWakeLock();
 }
 
+function checkStall() {
+  if (!wantStream || linking || !btChar) return;
+  if (Date.now() - lastPacketAt > STALL_MS) linkLost(`no data for ${STALL_MS / 1000} s`);
+}
+
 function onNotification(e) {
+  if (e.target !== btChar) return;   // a characteristic from an abandoned attempt
+  lastPacketAt = Date.now();
   const rr = parseHR(e.target.value);
   if (!rr.length) return;
   // One sequence number per notification. Interval values reconstruct the
@@ -581,34 +703,52 @@ function onNotification(e) {
 }
 
 function onDisconnected() {
-  btChar = null;
+  // An attempt in flight owns its own failure; and an event that arrives
+  // after the link is already back up is stale.
+  if (linking) return;
+  if (btDevice && btDevice.gatt && btDevice.gatt.connected) return;
   if (!wantStream) {
+    dropChar();
     linkState('standby', 'off');
     return;
   }
+  if (reconnectTimer) return;        // recovery already scheduled
+  linkLost('strap disconnected');
+}
+
+function linkLost(reason) {
+  if (!wantStream) return;
+  dropCount++;
+  console.warn(`[echo] link lost (${dropCount}): ${reason}`);
   persistSession();
   persistBeats();
   resyncBeats = RESYNC_BEATS;
-  scheduleReconnect();
+  scheduleReconnect(reason);   // set before hanging up, so the event it fires is ignored
+  hangUp();
 }
 
 /* Backoff, capped, and it never gives up on its own. A strap out of range for
  * ten minutes should still be streaming when it comes back; the operator is
- * not necessarily holding the phone. */
-function scheduleReconnect() {
+ * not necessarily holding the phone. Always the same strap: no chooser, no
+ * gesture needed. */
+function scheduleReconnect(reason) {
   if (!wantStream || !btDevice) return;
-  clearTimeout(reconnectTimer);
+  if (reconnectTimer || linking) return;
   const wait = Math.min(1000 * Math.pow(2, Math.min(reconnectTries, 4)), 15000);
   reconnectTries++;
   linkState(`reconnecting (${reconnectTries})`, 'off');
-  el.detail.textContent = 'Link dropped. Recording continues when it returns.';
+  el.detail.textContent = 'Link dropped' + (reason ? ` (${reason})` : '')
+    + `. Retrying the same strap in ${Math.round(wait / 1000)} s; recording continues when it returns.`;
   reconnectTimer = setTimeout(async () => {
+    reconnectTimer = null;
     if (!wantStream || !btDevice) return;
     try {
       await openStream();
       markEvent('link:restored', true);
-    } catch {
-      scheduleReconnect();
+    } catch (err) {
+      if (err && err.superseded) return;
+      console.warn('[echo] reconnect failed:', err && err.message);
+      scheduleReconnect(err && err.message);
     }
   }, wait);
 }
