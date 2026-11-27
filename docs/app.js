@@ -40,7 +40,7 @@ const el = {
   marklast: $('marklast'), prompt: $('prompt'), ptags: $('ptags'),
   pskip: $('pskip'), sampling: $('sampling'),
   visit: $('visit'), phasebtns: $('phasebtns'), beats_logged: $('beats_logged'),
-  exportbeats: $('exportbeats'),
+  exportbeats: $('exportbeats'), awake: $('awake'),
 };
 
 /* Environment is read at log time, not at session start, so a value entered
@@ -189,18 +189,45 @@ function clearSession() {
  * to tab eviction, and a dark screen also stops the operator noticing a
  * dropped connection. */
 async function holdWakeLock() {
-  if (!('wakeLock' in navigator) || wakeLock) return;
+  if (!('wakeLock' in navigator)) { el.awake.textContent = 'unsupported'; return; }
+  if (wakeLock) return;
   try {
     wakeLock = await navigator.wakeLock.request('screen');
-    wakeLock.addEventListener('release', () => { wakeLock = null; });
-  } catch { /* unsupported or denied — not fatal */ }
+    el.awake.textContent = 'held';
+    el.awake.style.color = 'var(--dim)';
+    // The browser releases this whenever the page is hidden or the screen
+    // goes off, and it cannot be re-requested while hidden. Re-arming
+    // therefore happens on the way back to visible, below.
+    wakeLock.addEventListener('release', () => {
+      wakeLock = null;
+      if (wantStream) {
+        el.awake.textContent = 'released';
+        el.awake.style.color = 'var(--amber)';
+      }
+    });
+  } catch {
+    // Silence here was the second half of the sleep bug: battery saver denies
+    // the request, the operator is told nothing, and the first sign of
+    // trouble is a dead session. Denial is reported, not swallowed.
+    wakeLock = null;
+    el.awake.textContent = 'denied';
+    el.awake.style.color = 'var(--red)';
+  }
 }
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
-    if (el.status.textContent === 'streaming') holdWakeLock();
+    if (wantStream) {
+      holdWakeLock();
+      // Chrome tears the GATT link down on the way into background on some
+      // builds without ever firing gattserverdisconnected, so returning to
+      // the foreground is also the moment to check whether the link is
+      // actually still there rather than trusting the last event seen.
+      if (btDevice && (!btDevice.gatt || !btDevice.gatt.connected)) onDisconnected();
+    }
   } else {
     persistSession();   // last chance before the tab may be discarded
+    persistBeats();
   }
 });
 
@@ -465,49 +492,125 @@ function parseHR(dv) {
   return rr;
 }
 
+/* ---------- link ----------
+ *
+ * requestDevice needs a user gesture; gatt.connect on an already-paired
+ * device object does not. So reconnection is possible for exactly as long as
+ * the device object is reachable, and the first version of this held it in a
+ * const inside connect(). The handle went out of scope the moment connect()
+ * returned, the disconnect handler could only rewrite the status text, and a
+ * phone that slept for thirty seconds ended the session. The handle lives at
+ * module scope for that reason alone.
+ *
+ * wantStream records that the operator asked for a stream and has not asked
+ * for it to stop. It is the gate on every reconnect and on re-arming the
+ * wake lock. Reading intent off el.status.textContent, as this did, meant the
+ * disconnect handler wrote 'disconnected' and thereby revoked the very
+ * condition the recovery path tested for. */
+
+let btDevice = null;
+let btChar = null;
+let reconnectTries = 0;
+let reconnectTimer = null;
+let wantStream = false;
+
+/* Features are differences between adjacent intervals in a rolling window. A
+ * window straddling an outage mixes beats from either side of it, so the
+ * splice contributes one difference that is not a physiological one. The
+ * window is not cleared, because clearing it would take the baseline with it;
+ * classification is withheld instead until enough post-gap beats have arrived
+ * to have pushed every pre-gap interval out. Beats keep logging throughout:
+ * the raw series is what a later extractor needs, and the gap is visible in
+ * it from the timestamps. */
+const RESYNC_BEATS = 70;
+let resyncBeats = 0;
+
+function linkState(text, cls) {
+  el.status.textContent = text;
+  el.connect.classList.toggle('armed', cls === 'on');
+}
+
 async function connect() {
   if (!identityComplete()) return;
   if (!navigator.bluetooth) {
     fail('Web Bluetooth unavailable. Use Chrome or Edge over HTTPS.');
     return;
   }
+  clearTimeout(reconnectTimer);   // a manual re-pair must not race the retry
   try {
     el.status.textContent = 'pairing';
-    const dev = await navigator.bluetooth.requestDevice({
+    btDevice = await navigator.bluetooth.requestDevice({
       filters: [{ services: [HR_SERVICE] }],
       optionalServices: [HR_SERVICE],
     });
-    dev.addEventListener('gattserverdisconnected', () => {
-      el.status.textContent = 'disconnected';
-      el.connect.classList.remove('armed');
-    });
-
-    const server = await dev.gatt.connect();
-    const char = await (await server.getPrimaryService(HR_SERVICE))
-      .getCharacteristic(HR_CHAR);
-    await char.startNotifications();
-    char.addEventListener('characteristicvaluechanged', (e) => {
-      const rr = parseHR(e.target.value);
-      if (!rr.length) return;
-      // One sequence number per notification. Interval values reconstruct the
-      // fine time axis on their own, but a dropped notification is invisible
-      // to a cumulative sum: the series simply continues, shorter. Grouping
-      // intervals by the packet they arrived in makes the gap detectable
-      // against wall clock.
-      packetSeq++;
-      rr.forEach((v) => ingest(v));
-    });
-
-    stopSim();
-    el.device.textContent = dev.name || 'heart rate strap';
-    el.status.textContent = 'streaming';
-    el.connect.classList.add('armed');
-    el.detail.textContent = 'Filling the 60-second window';
-    holdWakeLock();
+    btDevice.addEventListener('gattserverdisconnected', onDisconnected);
+    wantStream = true;
+    await openStream();
   } catch (err) {
+    wantStream = false;
     el.status.textContent = 'standby';
     if (err && err.name !== 'NotFoundError') fail(err.message);
   }
+}
+
+async function openStream() {
+  const server = await btDevice.gatt.connect();
+  btChar = await (await server.getPrimaryService(HR_SERVICE))
+    .getCharacteristic(HR_CHAR);
+  await btChar.startNotifications();
+  btChar.addEventListener('characteristicvaluechanged', onNotification);
+
+  stopSim();
+  reconnectTries = 0;
+  el.device.textContent = btDevice.name || 'heart rate strap';
+  linkState('streaming', 'on');
+  el.detail.textContent = 'Filling the 60-second window';
+  holdWakeLock();
+}
+
+function onNotification(e) {
+  const rr = parseHR(e.target.value);
+  if (!rr.length) return;
+  // One sequence number per notification. Interval values reconstruct the
+  // fine time axis on their own, but a dropped notification is invisible
+  // to a cumulative sum: the series simply continues, shorter. Grouping
+  // intervals by the packet they arrived in makes the gap detectable
+  // against wall clock.
+  packetSeq++;
+  rr.forEach((v) => ingest(v));
+}
+
+function onDisconnected() {
+  btChar = null;
+  if (!wantStream) {
+    linkState('standby', 'off');
+    return;
+  }
+  persistSession();
+  persistBeats();
+  resyncBeats = RESYNC_BEATS;
+  scheduleReconnect();
+}
+
+/* Backoff, capped, and it never gives up on its own. A strap out of range for
+ * ten minutes should still be streaming when it comes back; the operator is
+ * not necessarily holding the phone. */
+function scheduleReconnect() {
+  if (!wantStream || !btDevice) return;
+  clearTimeout(reconnectTimer);
+  const wait = Math.min(1000 * Math.pow(2, Math.min(reconnectTries, 4)), 15000);
+  reconnectTries++;
+  linkState(`reconnecting (${reconnectTries})`, 'off');
+  el.detail.textContent = 'Link dropped. Recording continues when it returns.';
+  reconnectTimer = setTimeout(async () => {
+    if (!wantStream || !btDevice) return;
+    try {
+      await openStream();
+      markEvent('link:restored', true);
+    } catch {
+      scheduleReconnect();
+    }
+  }, wait);
 }
 
 /* ---------- simulated feed ---------- */
@@ -687,6 +790,16 @@ function ingest(rrMs) {
     saveBaseline();
   }
   if (!valid) return;
+
+  // Post-outage resynchronisation. Every pre-gap interval has to leave the
+  // window before a classified state means anything again.
+  if (resyncBeats > 0) {
+    resyncBeats--;
+    el.state.dataset.s = '-';
+    el.state.textContent = 'Resync';
+    el.detail.textContent = `Refilling the window after a dropped link (${resyncBeats} beats)`;
+    return;
+  }
 
   const f = {};
   FEATURES.forEach((n, i) => { f[n] = echo.feat(i); });
