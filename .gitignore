@@ -21,3 +21,10 @@ __pycache__/
 # Do not commit without checking that determination first.
 data/echo_gate.py
 data/mmash_reliability.py
+
+# Held out until two checks are done: the dataset licenses (DEAP and WESAD terms on redistributing
+# derived data) and the MTSU Policy 140 ownership determination. stage0/ is the DEAP-based pilot analysis
+# and includes DEAP-derived feature files; wesad_windows.npz is a WESAD-derived window cache.
+# Do not remove these lines or commit these paths without checking both.
+stage0/
+train/wesad_windows.npz
